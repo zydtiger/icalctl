@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>icalctl</string>
+	<key>CFBundleExecutable</key>
+	<string>icalctl</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.zyd.icalctl</string>
+	<key>CFBundleName</key>
+	<string>icalctl</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>icalctl needs full Calendar access to list calendars and read today's events during the EventKit integration spike.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>icalctl needs Calendar access to list calendars and read today's events.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>icalctl will need write-only Calendar access for future event creation commands.</string>
+</dict>
+</plist>

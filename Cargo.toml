@@ -1,0 +1,12 @@
+[package]
+name = "icalctl"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+embed_plist = "1.2"
+eventkit = { package = "eventkit-rs", version = "0.5.6", default-features = false, features = ["events"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
