@@ -1,6 +1,7 @@
 #[cfg(target_os = "macos")]
 embed_plist::embed_info_plist!("../Info.plist");
 
+mod cache;
 mod calendar;
 mod cli;
 mod dates;
@@ -14,6 +15,9 @@ use cli::Cli;
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let output = calendar::run(cli.command)?;
+    if let Err(error) = cache::update_from_output(&output) {
+        eprintln!("warning: failed to update event cache: {error:#}");
+    }
 
     if cli.json {
         serde_json::to_writer(std::io::stdout(), &output).context("failed to write JSON output")?;

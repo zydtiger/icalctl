@@ -55,9 +55,9 @@ pub enum Command {
         calendars: Vec<String>,
     },
 
-    /// Show one event by exact EventKit identifier.
+    /// Show one event by exact EventKit identifier or cached row number.
     Show {
-        /// EventKit event identifier.
+        /// EventKit event identifier, or row number from the last event list.
         id: String,
     },
 
@@ -121,9 +121,9 @@ pub enum Command {
         alarm_minutes_before: Vec<i64>,
     },
 
-    /// Update a calendar event by exact EventKit identifier.
+    /// Update a calendar event by exact EventKit identifier or cached row number.
     Update {
-        /// EventKit event identifier.
+        /// EventKit event identifier, or row number from the last event list.
         id: String,
 
         /// New event title.
@@ -183,9 +183,9 @@ pub enum Command {
         add_alarm_minutes_before: Vec<i64>,
     },
 
-    /// Delete a calendar event by exact EventKit identifier.
+    /// Delete a calendar event by exact EventKit identifier or cached row number.
     Delete {
-        /// EventKit event identifier.
+        /// EventKit event identifier, or row number from the last event list.
         id: String,
 
         /// Delete without an interactive confirmation prompt.

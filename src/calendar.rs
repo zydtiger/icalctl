@@ -1,3 +1,4 @@
+use crate::cache::resolve_event_ref;
 use crate::cli::{AvailabilityArg, Command};
 use crate::dates::{parse_end_datetime, parse_start_datetime, today_range};
 use crate::models::{
@@ -52,6 +53,7 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             Ok(JsonOutput::Events { events })
         }
         Command::Show { id } => {
+            let id = resolve_event_ref(&id)?;
             let events = authorized_events_manager()?;
             let event = events
                 .get_event(&id)
@@ -210,10 +212,11 @@ fn add_event(input: AddEventInput) -> Result<EventReport> {
 }
 
 fn update_event(input: UpdateEventInput) -> Result<EventReport> {
+    let id = resolve_event_ref(&input.id)?;
     let events = authorized_events_manager()?;
     let current = events
-        .get_event(&input.id)
-        .with_context(|| format!("failed to load event {}", input.id))?;
+        .get_event(&id)
+        .with_context(|| format!("failed to load event {id}"))?;
 
     ensure_event_calendar_writable(&events, &current, "update")?;
     if let Some(calendar) = &input.calendar {
@@ -225,13 +228,13 @@ fn update_event(input: UpdateEventInput) -> Result<EventReport> {
         .as_deref()
         .map(parse_start_datetime)
         .transpose()
-        .with_context(|| format!("invalid --start for event {}", input.id))?;
+        .with_context(|| format!("invalid --start for event {id}"))?;
     let end = input
         .end
         .as_deref()
         .map(parse_end_datetime)
         .transpose()
-        .with_context(|| format!("invalid --end for event {}", input.id))?;
+        .with_context(|| format!("invalid --end for event {id}"))?;
 
     let effective_start = start.unwrap_or(current.start_date);
     let effective_end = end.unwrap_or(current.end_date);
@@ -278,18 +281,19 @@ fn update_event(input: UpdateEventInput) -> Result<EventReport> {
         };
 
         events
-            .update_event(&input.id, &patch)
-            .with_context(|| format!("failed to update event {}", input.id))?;
+            .update_event(&id, &patch)
+            .with_context(|| format!("failed to update event {id}"))?;
     }
 
-    add_relative_alarms(&events, &input.id, &input.add_alarm_minutes_before)?;
-    event_report_with_alarms(&events, &input.id)
+    add_relative_alarms(&events, &id, &input.add_alarm_minutes_before)?;
+    event_report_with_alarms(&events, &id)
 }
 
-fn delete_event(id: &str, force: bool) -> Result<DeletedReport> {
+fn delete_event(reference: &str, force: bool) -> Result<DeletedReport> {
+    let id = resolve_event_ref(reference)?;
     let events = authorized_events_manager()?;
     let event = events
-        .get_event(id)
+        .get_event(&id)
         .with_context(|| format!("failed to load event {id}"))?;
     ensure_event_calendar_writable(&events, &event, "delete")?;
 
@@ -298,11 +302,11 @@ fn delete_event(id: &str, force: bool) -> Result<DeletedReport> {
     }
 
     events
-        .delete_event(id, false)
+        .delete_event(&id, false)
         .with_context(|| format!("failed to delete event {id}"))?;
 
     Ok(DeletedReport {
-        id: id.to_string(),
+        id,
         title: event.title,
     })
 }

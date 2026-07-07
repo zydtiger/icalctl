@@ -39,10 +39,11 @@ fn print_events(events: &[EventReport]) {
         return;
     }
 
-    for event in events {
+    for (index, event) in events.iter().enumerate() {
         let calendar = event.calendar.as_deref().unwrap_or("unknown calendar");
         println!(
-            "- {} {} ({}) [{}]",
+            "{}. {} {} ({}) [{}]",
+            index + 1,
             event_time_range(event),
             event.title,
             calendar,
