@@ -146,6 +146,7 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             let deleted = delete_event(&id, force)?;
             Ok(JsonOutput::Deleted { deleted })
         }
+        Command::Completions { .. } => unreachable!("completions are handled before calendar run"),
     }
 }
 

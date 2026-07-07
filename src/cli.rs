@@ -1,4 +1,6 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{Shell, generate};
+use std::io;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -192,6 +194,12 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
+
+    /// Print a shell completion script to stdout.
+    Completions {
+        /// Shell to generate completions for.
+        shell: Shell,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -200,4 +208,10 @@ pub enum AvailabilityArg {
     Free,
     Tentative,
     Unavailable,
+}
+
+pub fn print_completions(shell: Shell) {
+    let mut command = Cli::command();
+    let name = command.get_name().to_string();
+    generate(shell, &mut command, name, &mut io::stdout());
 }

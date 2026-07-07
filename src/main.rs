@@ -10,16 +10,22 @@ mod output;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use cli::Cli;
+use cli::{Cli, Command};
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let output = calendar::run(cli.command)?;
+    let Cli { json, command } = Cli::parse();
+
+    if let Command::Completions { shell } = command {
+        cli::print_completions(shell);
+        return Ok(());
+    }
+
+    let output = calendar::run(command)?;
     if let Err(error) = cache::update_from_output(&output) {
         eprintln!("warning: failed to update event cache: {error:#}");
     }
 
-    if cli.json {
+    if json {
         serde_json::to_writer(std::io::stdout(), &output).context("failed to write JSON output")?;
         println!();
     } else {
