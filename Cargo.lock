@@ -274,6 +274,7 @@ name = "icalctl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "embed_plist",
  "eventkit-rs",

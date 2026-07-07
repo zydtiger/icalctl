@@ -19,9 +19,9 @@
 	<key>CFBundleVersion</key>
 	<string>0.1.0</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>icalctl needs full Calendar access to list calendars and read today's events during the EventKit integration spike.</string>
+	<string>icalctl needs full Calendar access to list calendars and read events from the local macOS Calendar store.</string>
 	<key>NSCalendarsUsageDescription</key>
-	<string>icalctl needs Calendar access to list calendars and read today's events.</string>
+	<string>icalctl needs Calendar access to list calendars and read events from the local macOS Calendar store.</string>
 	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
 	<string>icalctl will need write-only Calendar access for future event creation commands.</string>
 </dict>
