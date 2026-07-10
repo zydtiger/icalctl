@@ -1,4 +1,4 @@
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use std::io;
 
@@ -14,6 +14,55 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+#[derive(Debug, Args)]
+pub struct ReadCalendarSelectorArgs {
+    /// Calendar title to include. Can be passed more than once.
+    #[arg(short, long = "calendar")]
+    pub calendars: Vec<String>,
+
+    /// Exact EventKit calendar id to include. Can be passed more than once.
+    #[arg(long = "calendar-id")]
+    pub calendar_ids: Vec<String>,
+
+    /// Source title that qualifies every --calendar title.
+    #[arg(
+        long = "calendar-source",
+        requires = "calendars",
+        conflicts_with = "source_id"
+    )]
+    pub calendar_source: Option<String>,
+
+    /// Exact EventKit source id that qualifies every --calendar title.
+    #[arg(long, requires = "calendars")]
+    pub source_id: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct WriteCalendarSelectorArgs {
+    /// Calendar title. Defaults to the system default calendar for new events.
+    #[arg(short, long)]
+    pub calendar: Option<String>,
+
+    /// Exact EventKit calendar id.
+    #[arg(
+        long = "calendar-id",
+        conflicts_with_all = ["calendar", "calendar_source", "source_id"]
+    )]
+    pub calendar_id: Option<String>,
+
+    /// Source title that qualifies --calendar.
+    #[arg(
+        long = "calendar-source",
+        requires = "calendar",
+        conflicts_with = "source_id"
+    )]
+    pub calendar_source: Option<String>,
+
+    /// Exact EventKit source id that qualifies --calendar.
+    #[arg(long, requires = "calendar")]
+    pub source_id: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -34,16 +83,14 @@ pub enum Command {
         #[arg(long)]
         to: String,
 
-        /// Calendar title to include. Can be passed more than once.
-        #[arg(short, long = "calendar")]
-        calendars: Vec<String>,
+        #[command(flatten)]
+        calendar_selector: ReadCalendarSelectorArgs,
     },
 
     /// List today's events.
     Today {
-        /// Calendar title to include. Can be passed more than once.
-        #[arg(short, long = "calendar")]
-        calendars: Vec<String>,
+        #[command(flatten)]
+        calendar_selector: ReadCalendarSelectorArgs,
     },
 
     /// List upcoming events from now through N days from now.
@@ -52,9 +99,8 @@ pub enum Command {
         #[arg(long, default_value_t = 7)]
         days: i64,
 
-        /// Calendar title to include. Can be passed more than once.
-        #[arg(short, long = "calendar")]
-        calendars: Vec<String>,
+        #[command(flatten)]
+        calendar_selector: ReadCalendarSelectorArgs,
     },
 
     /// Show one event by exact EventKit identifier or cached row number.
@@ -76,9 +122,8 @@ pub enum Command {
         #[arg(long)]
         to: String,
 
-        /// Calendar title to include. Can be passed more than once.
-        #[arg(short, long = "calendar")]
-        calendars: Vec<String>,
+        #[command(flatten)]
+        calendar_selector: ReadCalendarSelectorArgs,
     },
 
     /// Create a calendar event.
@@ -94,9 +139,8 @@ pub enum Command {
         #[arg(long)]
         end: String,
 
-        /// Calendar title. Defaults to the system default calendar for new events.
-        #[arg(short, long)]
-        calendar: Option<String>,
+        #[command(flatten)]
+        calendar_selector: WriteCalendarSelectorArgs,
 
         /// Event notes.
         #[arg(long)]
@@ -140,9 +184,8 @@ pub enum Command {
         #[arg(long)]
         end: Option<String>,
 
-        /// Move the event to another calendar by title.
-        #[arg(short, long)]
-        calendar: Option<String>,
+        #[command(flatten)]
+        calendar_selector: WriteCalendarSelectorArgs,
 
         /// Replace event notes.
         #[arg(long, conflicts_with = "clear_notes")]
@@ -214,4 +257,35 @@ pub fn print_completions(shell: Shell) {
     let mut command = Cli::command();
     let name = command.get_name().to_string();
     generate(shell, &mut command, name, &mut io::stdout());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_qualifier_requires_calendar_title() {
+        let result = Cli::try_parse_from(["icalctl", "today", "--calendar-source", "iCloud"]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_calendar_id_conflicts_with_title() {
+        let result = Cli::try_parse_from([
+            "icalctl",
+            "add",
+            "Meeting",
+            "--start",
+            "2026-07-10T09:00",
+            "--end",
+            "2026-07-10T10:00",
+            "--calendar",
+            "Calendar",
+            "--calendar-id",
+            "ABC",
+        ]);
+
+        assert!(result.is_err());
+    }
 }

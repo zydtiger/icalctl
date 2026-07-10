@@ -4,6 +4,8 @@ These are improvement notes from using `icalctl` to add a multi-flight itinerary
 
 ## 1. Support stable calendar targeting by id/source
 
+**Status: Resolved.** Implemented exact calendar-id targeting, source-qualified title selectors, duplicate-title errors, stable read filtering, and calendar source provenance in event output.
+
 Problem: `add` and `update --calendar` target calendars by title only. In the observed calendar store, there were two writable calendars named `Calendar`: one under Exchange and one under iCloud. The current implementation uses the first title match, so `--calendar "Calendar"` could write to the wrong account.
 
 Proposed changes:

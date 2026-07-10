@@ -22,6 +22,7 @@ cargo install --path .
 - Treat `add`, `update`, and `delete` as live writes to the user's Calendar.app data.
 - Do not create, update, move, or delete an event until the user has explicitly confirmed the final action.
 - For every request to add an event, analyze the best-fit calendar from the user's available calendars and confirm that calendar choice before writing.
+- Prefer exact `--calendar-id` selectors for agent writes and reads. Title-only selectors are acceptable only when the title is unique.
 - Quote titles, calendar names, notes, locations, and URLs that contain spaces or shell metacharacters.
 - Use row numbers only immediately after a fresh `today`, `upcoming`, `list`, or `search`; otherwise use the exact EventKit id or rerun the list command.
 
@@ -82,6 +83,7 @@ Use these heuristics:
 The confirmation must include:
 
 - calendar title
+- calendar id
 - event title
 - start and end date/time, including timezone assumptions
 - whether it is all-day or timed
@@ -97,14 +99,14 @@ I would add "Project sync" to the Work calendar on 2026-07-07 from 09:00 to 09:3
 
 ```sh
 icalctl add "Project sync" \
-  --calendar "Work" \
+  --calendar-id A46E7273-2813-48A6-8F74-67B9E9E3D55D \
   --start 2026-07-07T09:00 \
   --end 2026-07-07T09:30 \
   --alarm-minutes-before 10 \
   --json
 ```
 
-5. Report the created event id, title, time, and calendar.
+5. Report the created event id, title, time, calendar id, and calendar source.
 
 ## Date And Time Input
 
@@ -123,7 +125,7 @@ Date-only values use the local timezone. For range commands, date-only `--from` 
 For all-day events, pass date-only values with `--all-day`:
 
 ```sh
-icalctl add "Conference" --calendar "Travel" --start 2026-07-07 --end 2026-07-09 --all-day
+icalctl add "Conference" --calendar-id CALENDAR_ID --start 2026-07-07 --end 2026-07-09 --all-day
 ```
 
 When the user gives relative dates such as "today", "tomorrow", or "next Friday", resolve them to concrete dates before confirming the write.
@@ -165,7 +167,9 @@ icalctl calendars
 icalctl calendars --json
 ```
 
-Use this before adding events so the agent can choose the best-fit calendar. The JSON form is the preferred source for exact calendar titles.
+Use this before adding events so the agent can choose the best-fit calendar. The JSON form is the preferred source for exact calendar ids and source metadata.
+
+When duplicate titles exist, title-only selection fails and prints the matching source, source id, calendar id, and writability. Use `--calendar-id`, or qualify a title with `--calendar-source` or `--source-id`.
 
 ### `today`
 
@@ -176,9 +180,10 @@ icalctl today
 icalctl today --json
 icalctl today --calendar "Work"
 icalctl today --calendar "Work" --calendar "Personal" --json
+icalctl today --calendar-id A46E7273-2813-48A6-8F74-67B9E9E3D55D --json
 ```
 
-Use to answer "what is on my calendar today?" or to create fresh row-number references for events happening today. `--calendar` can be passed more than once.
+Use to answer "what is on my calendar today?" or to create fresh row-number references for events happening today. `--calendar` and `--calendar-id` can be passed more than once. Prefer ids for automation.
 
 ### `upcoming`
 
@@ -200,9 +205,10 @@ List events in a bounded date range.
 icalctl list --from 2026-07-07 --to 2026-07-07
 icalctl list --from 2026-07-07T09:00 --to 2026-07-07T17:00
 icalctl list --from 2026-07-07 --to 2026-07-14 --calendar "Work" --json
+icalctl list --from 2026-07-07 --to 2026-07-14 --calendar-id A46E7273-2813-48A6-8F74-67B9E9E3D55D --json
 ```
 
-Use when the user asks for events on a specific date or between two concrete times. `--calendar` can be passed more than once to include only selected calendars.
+Use when the user asks for events on a specific date or between two concrete times. `--calendar` and `--calendar-id` can be passed more than once to include only selected calendars.
 
 ### `search`
 
@@ -235,6 +241,7 @@ Create a calendar event.
 ```sh
 icalctl add "Meeting" --start 2026-07-07T09:00 --end 2026-07-07T09:30
 icalctl add "Meeting" --calendar "Work" --start 2026-07-07T09:00 --end 2026-07-07T09:30
+icalctl add "Meeting" --calendar-id A46E7273-2813-48A6-8F74-67B9E9E3D55D --start 2026-07-07T09:00 --end 2026-07-07T09:30
 icalctl add "Dentist" --calendar "Personal" --start 2026-07-07T15:00 --end 2026-07-07T16:00 --location "Clinic"
 icalctl add "Focus block" --calendar "Work" --start 2026-07-07T13:00 --end 2026-07-07T15:00 --availability busy
 icalctl add "Conference" --calendar "Travel" --start 2026-07-07 --end 2026-07-09 --all-day
@@ -246,6 +253,9 @@ Options:
 - `--start <START>`: required start date or datetime.
 - `--end <END>`: required end date or datetime. Date-only values include the whole day.
 - `-c, --calendar <CALENDAR>`: calendar title. If omitted, EventKit uses the system default calendar for new events. Prefer choosing and confirming a calendar explicitly.
+- `--calendar-id <CALENDAR_ID>`: exact EventKit calendar id. Preferred for automation.
+- `--calendar-source <SOURCE> --calendar <CALENDAR>`: source-qualified calendar title.
+- `--source-id <SOURCE_ID> --calendar <CALENDAR>`: source-id-qualified calendar title.
 - `--notes <NOTES>`: event notes.
 - `--location <LOCATION>`: event location.
 - `--url <URL>`: event URL.
@@ -264,6 +274,7 @@ Update an event by exact EventKit identifier or cached row number.
 icalctl update <event-id> --title "New title"
 icalctl update 1 --location "Library"
 icalctl update 1 --calendar "Work"
+icalctl update 1 --calendar-id A46E7273-2813-48A6-8F74-67B9E9E3D55D
 icalctl update 1 --start 2026-07-07T10:00 --end 2026-07-07T10:30
 icalctl update 1 --clear-location --clear-notes --clear-url
 icalctl update 1 --add-alarm-minutes-before 30
@@ -277,6 +288,9 @@ Options:
 - `--start <START>`: replace the start date or datetime.
 - `--end <END>`: replace the end date or datetime.
 - `-c, --calendar <CALENDAR>`: move the event to another calendar by title.
+- `--calendar-id <CALENDAR_ID>`: move the event to an exact EventKit calendar id.
+- `--calendar-source <SOURCE> --calendar <CALENDAR>`: move by a source-qualified title.
+- `--source-id <SOURCE_ID> --calendar <CALENDAR>`: move by a source-id-qualified title.
 - `--notes <NOTES>`: replace notes.
 - `--clear-notes`: clear notes.
 - `--location <LOCATION>`: replace location.
@@ -370,7 +384,7 @@ Add an event after calendar analysis and confirmation:
 
 ```sh
 icalctl calendars --json
-icalctl add "Dentist" --calendar "Personal" --start 2026-07-07T15:00 --end 2026-07-07T16:00 --location "Clinic" --json
+icalctl add "Dentist" --calendar-id CALENDAR_ID --start 2026-07-07T15:00 --end 2026-07-07T16:00 --location "Clinic" --json
 ```
 
 Delete after confirming the exact event with the user:

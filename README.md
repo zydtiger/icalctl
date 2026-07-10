@@ -134,6 +134,32 @@ icalctl add "Meeting" --start 2026-07-07T09:00 --end 2026-07-07T09:30 --json
 
 JSON is compact by default and is the intended scripting interface.
 
+Event JSON includes the selected calendar's title, EventKit id, source title,
+and source id as `calendar`, `calendar_id`, `calendar_source`, and
+`calendar_source_id`.
+
+## Calendar Selection
+
+Calendar ids are the safest selectors for scripts and agents:
+
+```sh
+icalctl today --calendar-id A46E7273-2813-48A6-8F74-67B9E9E3D55D --json
+icalctl add "Project sync" \
+  --calendar-id A46E7273-2813-48A6-8F74-67B9E9E3D55D \
+  --start 2026-07-07T09:00 \
+  --end 2026-07-07T09:30
+```
+
+`list`, `today`, `upcoming`, and `search` accept `--calendar-id` more than
+once. Title selectors remain available for interactive use. A title that
+matches more than one calendar now fails and lists each candidate's source,
+source id, calendar id, and writability. Qualify a duplicate title by source:
+
+```sh
+icalctl today --calendar-source iCloud --calendar Calendar
+icalctl today --source-id SOURCE_ID --calendar Calendar
+```
+
 ## Row Cache
 
 List-like commands cache their most recent event rows:
@@ -189,7 +215,7 @@ Specify calendar, location, notes, URL, availability, and alarms:
 
 ```sh
 icalctl add "Project sync" \
-  --calendar Work \
+  --calendar-id A46E7273-2813-48A6-8F74-67B9E9E3D55D \
   --start 2026-07-07T09:00 \
   --end 2026-07-07T09:30 \
   --location "Room 3" \
@@ -220,10 +246,10 @@ Clear nullable fields:
 icalctl update 1 --clear-location --clear-notes --clear-url
 ```
 
-Move to another calendar by title:
+Move to another calendar by exact id:
 
 ```sh
-icalctl update 1 --calendar Work
+icalctl update 1 --calendar-id A46E7273-2813-48A6-8F74-67B9E9E3D55D
 ```
 
 Add another alarm:
@@ -308,6 +334,8 @@ Main modules:
 
 - `src/cli.rs`: command and flag definitions
 - `src/calendar.rs`: EventKit read/write operations
+- `src/calendar_selector.rs`: stable id/source/title selector resolution
+- `src/eventkit_bridge.rs`: exact-calendar-id EventKit writes through `objc2`
 - `src/cache.rs`: last-list row cache
 - `src/dates.rs`: local date parsing
 - `src/models.rs`: JSON/report structs

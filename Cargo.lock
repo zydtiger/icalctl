@@ -288,6 +288,8 @@ dependencies = [
  "clap_complete",
  "embed_plist",
  "eventkit-rs",
+ "objc2-event-kit",
+ "objc2-foundation",
  "serde",
  "serde_json",
 ]

@@ -1,15 +1,17 @@
 use crate::cache::resolve_event_ref;
-use crate::cli::{AvailabilityArg, Command};
+use crate::calendar_selector::{CalendarSelector, require_single_calendar, resolve_calendars};
+use crate::cli::{AvailabilityArg, Command, ReadCalendarSelectorArgs, WriteCalendarSelectorArgs};
 use crate::dates::{parse_end_datetime, parse_start_datetime, today_range};
+use crate::eventkit_bridge::{create_event_in_calendar, move_event_to_calendar};
 use crate::models::{
     AlarmReport, CalendarReport, DeletedReport, EventReport, JsonOutput, StatusReport,
 };
 use crate::output::event_time_range;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local};
 use eventkit::{
-    AlarmInfo, AlarmProximity, AuthorizationStatus, EventAvailability, EventDraft, EventItem,
-    EventPatch, EventsManager,
+    AlarmInfo, AlarmProximity, AuthorizationStatus, CalendarInfo, EventAvailability, EventDraft,
+    EventItem, EventPatch, EventsManager,
 };
 use std::io::{self, Write};
 
@@ -31,25 +33,29 @@ pub fn run(command: Command) -> Result<JsonOutput> {
         Command::List {
             from,
             to,
-            calendars,
+            calendar_selector,
         } => {
-            let events = fetch_range(&from, &to, &calendars)
+            let events = fetch_range(&from, &to, &calendar_selector)
                 .with_context(|| format!("failed to list events from {from} to {to}"))?;
             Ok(JsonOutput::Events { events })
         }
-        Command::Today { calendars } => {
+        Command::Today { calendar_selector } => {
             let (start, end) = today_range()?;
-            let events = fetch_events(start, end, &calendars).context("failed to list today")?;
+            let events =
+                fetch_events(start, end, &calendar_selector).context("failed to list today")?;
             Ok(JsonOutput::Events { events })
         }
-        Command::Upcoming { days, calendars } => {
+        Command::Upcoming {
+            days,
+            calendar_selector,
+        } => {
             if days <= 0 {
                 bail!("--days must be greater than zero");
             }
             let start = Local::now();
             let end = start + chrono::Duration::days(days);
-            let events =
-                fetch_events(start, end, &calendars).context("failed to list upcoming events")?;
+            let events = fetch_events(start, end, &calendar_selector)
+                .context("failed to list upcoming events")?;
             Ok(JsonOutput::Events { events })
         }
         Command::Show { id } => {
@@ -58,18 +64,19 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             let event = events
                 .get_event(&id)
                 .with_context(|| format!("failed to show event {id}"))?;
+            let calendars = list_calendars(&events)?;
             Ok(JsonOutput::Event {
-                event: Box::new(EventReport::from(&event)),
+                event: Box::new(event_report(&event, &calendars)),
             })
         }
         Command::Search {
             query,
             from,
             to,
-            calendars,
+            calendar_selector,
         } => {
             let query = query.to_lowercase();
-            let events = fetch_range(&from, &to, &calendars)
+            let events = fetch_range(&from, &to, &calendar_selector)
                 .with_context(|| format!("failed to search events from {from} to {to}"))?
                 .into_iter()
                 .filter(|event| event_matches(event, &query))
@@ -80,7 +87,7 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             title,
             start,
             end,
-            calendar,
+            calendar_selector,
             notes,
             location,
             url,
@@ -92,7 +99,7 @@ pub fn run(command: Command) -> Result<JsonOutput> {
                 title,
                 start,
                 end,
-                calendar,
+                calendar_selector,
                 notes,
                 location,
                 url,
@@ -109,7 +116,7 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             title,
             start,
             end,
-            calendar,
+            calendar_selector,
             notes,
             clear_notes,
             location,
@@ -126,7 +133,7 @@ pub fn run(command: Command) -> Result<JsonOutput> {
                 title,
                 start,
                 end,
-                calendar,
+                calendar_selector,
                 notes,
                 clear_notes,
                 location,
@@ -154,7 +161,7 @@ struct AddEventInput {
     title: String,
     start: String,
     end: String,
-    calendar: Option<String>,
+    calendar_selector: WriteCalendarSelectorArgs,
     notes: Option<String>,
     location: Option<String>,
     url: Option<String>,
@@ -168,7 +175,7 @@ struct UpdateEventInput {
     title: Option<String>,
     start: Option<String>,
     end: Option<String>,
-    calendar: Option<String>,
+    calendar_selector: WriteCalendarSelectorArgs,
     notes: Option<String>,
     clear_notes: bool,
     location: Option<String>,
@@ -189,7 +196,7 @@ fn add_event(input: AddEventInput) -> Result<EventReport> {
     ensure_valid_event_range(start, end)?;
 
     let events = authorized_events_manager()?;
-    ensure_target_calendar_writable(&events, input.calendar.as_deref())?;
+    let target = resolve_target_calendar(&events, &input.calendar_selector, true)?;
 
     let draft = EventDraft {
         title: &input.title,
@@ -197,19 +204,18 @@ fn add_event(input: AddEventInput) -> Result<EventReport> {
         end: Some(end),
         notes: input.notes.as_deref(),
         location: input.location.as_deref(),
-        calendar_title: input.calendar.as_deref(),
+        calendar_title: None,
         all_day: input.all_day,
         URL: input.url.as_deref(),
         availability: input.availability.map(EventAvailability::from),
         ..Default::default()
     };
 
-    let created = events
-        .create_event(&draft)
+    let id = create_event_in_calendar(&draft, &target.identifier)
         .context("failed to create event through EventKit")?;
 
-    add_relative_alarms(&events, &created.identifier, &input.alarm_minutes_before)?;
-    event_report_with_alarms(&events, &created.identifier)
+    add_relative_alarms(&events, &id, &input.alarm_minutes_before)?;
+    event_report_with_alarms(&events, &id)
 }
 
 fn update_event(input: UpdateEventInput) -> Result<EventReport> {
@@ -220,9 +226,15 @@ fn update_event(input: UpdateEventInput) -> Result<EventReport> {
         .with_context(|| format!("failed to load event {id}"))?;
 
     ensure_event_calendar_writable(&events, &current, "update")?;
-    if let Some(calendar) = &input.calendar {
-        ensure_target_calendar_writable(&events, Some(calendar))?;
-    }
+    let target = if write_selector_is_empty(&input.calendar_selector) {
+        None
+    } else {
+        Some(resolve_target_calendar(
+            &events,
+            &input.calendar_selector,
+            false,
+        )?)
+    };
 
     let start = input
         .start
@@ -256,7 +268,7 @@ fn update_event(input: UpdateEventInput) -> Result<EventReport> {
     let has_patch = input.title.is_some()
         || start.is_some()
         || end.is_some()
-        || input.calendar.is_some()
+        || target.is_some()
         || notes.is_some()
         || location.is_some()
         || url.is_some()
@@ -267,7 +279,16 @@ fn update_event(input: UpdateEventInput) -> Result<EventReport> {
         bail!("no update fields provided");
     }
 
-    if has_patch {
+    let has_event_patch = input.title.is_some()
+        || start.is_some()
+        || end.is_some()
+        || notes.is_some()
+        || location.is_some()
+        || url.is_some()
+        || all_day.is_some()
+        || availability.is_some();
+
+    if has_event_patch {
         let patch = EventPatch {
             title: input.title.as_deref(),
             notes,
@@ -275,7 +296,7 @@ fn update_event(input: UpdateEventInput) -> Result<EventReport> {
             start,
             end,
             all_day,
-            calendar_title: input.calendar.as_deref(),
+            calendar_title: None,
             URL: url,
             availability,
             ..Default::default()
@@ -285,6 +306,13 @@ fn update_event(input: UpdateEventInput) -> Result<EventReport> {
             .update_event(&id, &patch)
             .with_context(|| format!("failed to update event {id}"))?;
     }
+
+    let id = if let Some(target) = target {
+        move_event_to_calendar(&id, &target.identifier)
+            .with_context(|| format!("failed to move event {id}"))?
+    } else {
+        id
+    };
 
     add_relative_alarms(&events, &id, &input.add_alarm_minutes_before)?;
     event_report_with_alarms(&events, &id)
@@ -351,28 +379,47 @@ fn nullable_patch(value: Option<&str>, clear: bool) -> Option<Option<&str>> {
     if clear { Some(None) } else { value.map(Some) }
 }
 
-fn ensure_target_calendar_writable(
+fn resolve_target_calendar(
     events: &EventsManager,
-    calendar_title: Option<&str>,
-) -> Result<()> {
-    let calendar = if let Some(title) = calendar_title {
-        events
-            .list_calendars()
-            .context("failed to list calendars before write")?
-            .into_iter()
-            .find(|calendar| calendar.title == title)
-            .ok_or_else(|| anyhow!("calendar not found: {title}"))?
-    } else {
+    args: &WriteCalendarSelectorArgs,
+    allow_default: bool,
+) -> Result<CalendarInfo> {
+    let calendar = if write_selector_is_empty(args) {
+        if !allow_default {
+            bail!("a calendar selector is required");
+        }
         events
             .default_calendar()
             .context("no default calendar is available for new events")?
+    } else {
+        let calendars = list_calendars(events)?;
+        let titles: Vec<String> = args.calendar.iter().cloned().collect();
+        let ids: Vec<String> = args.calendar_id.iter().cloned().collect();
+        require_single_calendar(
+            &calendars,
+            &CalendarSelector {
+                titles: &titles,
+                ids: &ids,
+                source: args.calendar_source.as_deref(),
+                source_id: args.source_id.as_deref(),
+            },
+        )?
     };
 
     if !calendar.allows_modifications {
-        bail!("calendar is read-only: {}", calendar.title);
+        bail!(
+            "calendar is read-only: {} [{}] source={}",
+            calendar.title,
+            calendar.identifier,
+            calendar.source.as_deref().unwrap_or("unknown")
+        );
     }
 
-    Ok(())
+    Ok(calendar)
+}
+
+fn write_selector_is_empty(args: &WriteCalendarSelectorArgs) -> bool {
+    args.calendar.is_none() && args.calendar_id.is_none()
 }
 
 fn ensure_event_calendar_writable(
@@ -437,7 +484,8 @@ fn event_report_with_alarms(events: &EventsManager, id: &str) -> Result<EventRep
         .iter()
         .map(AlarmReport::from)
         .collect();
-    let mut report = EventReport::from(&event);
+    let calendars = list_calendars(events)?;
+    let mut report = event_report(&event, &calendars);
     report.alarms = Some(alarms);
     Ok(report)
 }
@@ -465,37 +513,79 @@ fn confirm_delete(event: &EventItem) -> Result<()> {
     }
 }
 
-fn fetch_range(from: &str, to: &str, calendars: &[String]) -> Result<Vec<EventReport>> {
+fn fetch_range(
+    from: &str,
+    to: &str,
+    selector: &ReadCalendarSelectorArgs,
+) -> Result<Vec<EventReport>> {
     let start = parse_start_datetime(from).with_context(|| format!("invalid --from: {from}"))?;
     let end = parse_end_datetime(to).with_context(|| format!("invalid --to: {to}"))?;
-    fetch_events(start, end, calendars)
+    fetch_events(start, end, selector)
 }
 
 fn fetch_events(
     start: DateTime<Local>,
     end: DateTime<Local>,
-    calendars: &[String],
+    selector: &ReadCalendarSelectorArgs,
 ) -> Result<Vec<EventReport>> {
     if start >= end {
         bail!("--from must be before --to");
     }
 
     let events = authorized_events_manager()?;
-    let calendar_refs: Vec<&str> = calendars.iter().map(String::as_str).collect();
-    let selected_calendars = if calendar_refs.is_empty() {
+    let calendars = list_calendars(&events)?;
+    let selector = CalendarSelector {
+        titles: &selector.calendars,
+        ids: &selector.calendar_ids,
+        source: selector.calendar_source.as_deref(),
+        source_id: selector.source_id.as_deref(),
+    };
+    let selected_ids = if selector.is_empty() {
         None
     } else {
-        Some(calendar_refs.as_slice())
+        Some(
+            resolve_calendars(&calendars, &selector)?
+                .into_iter()
+                .map(|calendar| calendar.identifier)
+                .collect::<Vec<_>>(),
+        )
     };
 
-    let events = events
-        .fetch_events(start, end, selected_calendars)
+    let reports = events
+        .fetch_events(start, end, None)
         .context("failed to fetch events through EventKit")?
-        .iter()
-        .map(EventReport::from)
+        .into_iter()
+        .filter(|event| {
+            selected_ids.as_ref().is_none_or(|ids| {
+                event
+                    .calendar_id
+                    .as_ref()
+                    .is_some_and(|id| ids.contains(id))
+            })
+        })
+        .map(|event| event_report(&event, &calendars))
         .collect();
 
-    Ok(events)
+    Ok(reports)
+}
+
+fn list_calendars(events: &EventsManager) -> Result<Vec<CalendarInfo>> {
+    events
+        .list_calendars()
+        .context("failed to list calendars through EventKit")
+}
+
+fn event_report(event: &EventItem, calendars: &[CalendarInfo]) -> EventReport {
+    let mut report = EventReport::from(event);
+    if let Some(calendar) = event
+        .calendar_id
+        .as_deref()
+        .and_then(|id| calendars.iter().find(|calendar| calendar.identifier == id))
+    {
+        report.calendar_source = calendar.source.clone();
+        report.calendar_source_id = calendar.source_id.clone();
+    }
+    report
 }
 
 fn event_matches(event: &EventReport, query: &str) -> bool {

@@ -3,8 +3,10 @@ embed_plist::embed_info_plist!("../Info.plist");
 
 mod cache;
 mod calendar;
+mod calendar_selector;
 mod cli;
 mod dates;
+mod eventkit_bridge;
 mod models;
 mod output;
 

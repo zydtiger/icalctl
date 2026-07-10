@@ -60,6 +60,16 @@ fn print_event_detail(event: &EventReport) {
     if let Some(calendar) = &event.calendar {
         println!("calendar: {calendar}");
     }
+    if let Some(calendar_id) = &event.calendar_id {
+        println!("calendar id: {calendar_id}");
+    }
+    if let Some(source) = &event.calendar_source {
+        if let Some(source_id) = &event.calendar_source_id {
+            println!("calendar source: {source} [{source_id}]");
+        } else {
+            println!("calendar source: {source}");
+        }
+    }
     if let Some(location) = &event.location {
         println!("location: {location}");
     }
