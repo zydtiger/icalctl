@@ -15,6 +15,19 @@ pub enum JsonOutput {
     DefaultCalendar {
         calendar: CalendarReport,
     },
+    ReminderStatus(StatusReport),
+    ReminderLists {
+        lists: Vec<ReminderListReport>,
+    },
+    DefaultReminderList {
+        list: ReminderListReport,
+    },
+    Reminders {
+        reminders: Vec<ReminderReport>,
+    },
+    Reminder {
+        reminder: Box<ReminderReport>,
+    },
     Events {
         events: Vec<EventReport>,
     },
@@ -47,10 +60,13 @@ pub struct StatusReport {
 #[derive(Debug, Serialize)]
 pub struct DoctorReport {
     pub authorization: String,
+    pub reminders_authorization: String,
     pub process: ProcessReport,
     pub info_plist: InfoPlistReport,
     pub recommended_command: String,
+    pub recommended_reminders_command: String,
     pub remediation: Vec<String>,
+    pub reminders_remediation: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +83,115 @@ pub struct InfoPlistReport {
     pub has_full_access_usage_description: bool,
     pub has_legacy_usage_description: bool,
     pub has_write_only_usage_description: bool,
+    pub has_reminders_full_access_usage_description: bool,
+    pub has_reminders_legacy_usage_description: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ReminderListReport {
+    pub id: String,
+    pub title: String,
+    pub source: Option<String>,
+    pub source_id: Option<String>,
+    pub source_type: Option<String>,
+    pub list_type: String,
+    pub allows_modifications: bool,
+    pub is_immutable: bool,
+    pub is_subscribed: bool,
+    pub is_default_for_new_reminders: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderPriority {
+    None,
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderDateKind {
+    Date,
+    Datetime,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ReminderDateReport {
+    pub kind: ReminderDateKind,
+    pub date: Option<String>,
+    pub local: Option<String>,
+    pub normalized: Option<String>,
+    pub utc: Option<String>,
+    pub time_zone: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ReminderStructuredLocationReport {
+    pub title: Option<String>,
+    pub radius_meters: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ReminderAlarmReport {
+    pub relative_offset_seconds: Option<f64>,
+    pub absolute_date: Option<String>,
+    pub proximity: String,
+    pub alarm_type: String,
+    pub structured_location: Option<ReminderStructuredLocationReport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ReminderRecurrenceEndReport {
+    pub kind: String,
+    pub occurrence_count: Option<usize>,
+    pub end_date: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ReminderRecurrenceReport {
+    pub frequency: String,
+    pub interval: usize,
+    pub first_day_of_week: isize,
+    pub end: ReminderRecurrenceEndReport,
+    pub days_of_week: Option<Vec<isize>>,
+    pub days_of_month: Option<Vec<i32>>,
+    pub months_of_year: Option<Vec<i32>>,
+    pub weeks_of_year: Option<Vec<i32>>,
+    pub days_of_year: Option<Vec<i32>>,
+    pub set_positions: Option<Vec<i32>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ReminderReport {
+    pub id: String,
+    pub title: String,
+    pub completed: bool,
+    pub completion_date: Option<String>,
+    pub priority: ReminderPriority,
+    pub priority_value: usize,
+    pub list: Option<String>,
+    pub list_id: Option<String>,
+    pub list_source: Option<String>,
+    pub list_source_id: Option<String>,
+    pub list_type: Option<String>,
+    pub allows_list_modifications: Option<bool>,
+    pub due: Option<ReminderDateReport>,
+    pub start: Option<ReminderDateReport>,
+    pub notes: Option<String>,
+    pub location: Option<String>,
+    pub url: Option<String>,
+    pub has_notes: bool,
+    pub has_url: bool,
+    pub alarm_count: Option<usize>,
+    pub recurrence_count: Option<usize>,
+    pub alarms: Option<Vec<ReminderAlarmReport>>,
+    pub recurrence_rules: Option<Vec<ReminderRecurrenceReport>>,
+    pub creation_date: Option<String>,
+    pub last_modified_date: Option<String>,
+    pub external_identifier: Option<String>,
+    pub item_time_zone: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

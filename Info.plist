@@ -24,5 +24,9 @@
 	<string>icalctl needs Calendar access to list, create, update, and delete events in the local macOS Calendar store.</string>
 	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
 	<string>icalctl needs write-only Calendar access to create events in the local macOS Calendar store.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>icalctl needs full Reminders access to list, create, update, complete, and delete reminders in the local macOS Reminders store.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>icalctl needs Reminders access to list, create, update, complete, and delete reminders in the local macOS Reminders store.</string>
 </dict>
 </plist>

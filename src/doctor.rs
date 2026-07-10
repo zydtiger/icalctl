@@ -1,4 +1,5 @@
 use crate::models::{DoctorReport, InfoPlistReport, ProcessReport};
+use crate::reminders::ReminderAuthorization;
 use eventkit::{AuthorizationStatus, EventsManager};
 use std::fmt::Debug;
 
@@ -7,6 +8,7 @@ const INFO_PLIST: &str = include_str!("../Info.plist");
 
 pub fn doctor_report() -> DoctorReport {
     let authorization = EventsManager::authorization_status();
+    let reminders_authorization = ReminderAuthorization::current();
     let executable = std::env::current_exe()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|error| format!("unknown ({error})"));
@@ -14,6 +16,7 @@ pub fn doctor_report() -> DoctorReport {
 
     DoctorReport {
         authorization: authorization_name(authorization).to_string(),
+        reminders_authorization: reminders_authorization.as_str().to_string(),
         process: ProcessReport {
             pid: std::process::id(),
             executable,
@@ -27,9 +30,58 @@ pub fn doctor_report() -> DoctorReport {
             has_legacy_usage_description: INFO_PLIST.contains("NSCalendarsUsageDescription"),
             has_write_only_usage_description: INFO_PLIST
                 .contains("NSCalendarsWriteOnlyAccessUsageDescription"),
+            has_reminders_full_access_usage_description: INFO_PLIST
+                .contains("NSRemindersFullAccessUsageDescription"),
+            has_reminders_legacy_usage_description: INFO_PLIST
+                .contains("NSRemindersUsageDescription"),
         },
         recommended_command: recommended_command(authorization).to_string(),
+        recommended_reminders_command: recommended_reminders_command(reminders_authorization)
+            .to_string(),
         remediation: remediation(authorization),
+        reminders_remediation: reminders_remediation(reminders_authorization),
+    }
+}
+
+fn recommended_reminders_command(status: ReminderAuthorization) -> &'static str {
+    match status {
+        ReminderAuthorization::FullAccess => "icalctl reminders lists --json",
+        ReminderAuthorization::NotDetermined => "icalctl reminders lists",
+        ReminderAuthorization::WriteOnly
+        | ReminderAuthorization::Denied
+        | ReminderAuthorization::Restricted
+        | ReminderAuthorization::Unknown => "icalctl doctor --json",
+    }
+}
+
+fn reminders_remediation(status: ReminderAuthorization) -> Vec<String> {
+    match status {
+        ReminderAuthorization::FullAccess => vec![
+            "Reminders full access is ready; prefer exact list ids for automation.".to_string(),
+        ],
+        ReminderAuthorization::NotDetermined => vec![
+            "Open Terminal.app, iTerm, or Ghostty outside an embedded tool sandbox.".to_string(),
+            "Run `icalctl reminders lists` and approve the macOS Reminders prompt.".to_string(),
+            "Run `icalctl doctor --json` again to verify Reminders FullAccess.".to_string(),
+        ],
+        ReminderAuthorization::WriteOnly => vec![
+            "Open System Settings > Privacy & Security > Reminders.".to_string(),
+            "Enable full Reminders access for icalctl or its launching terminal.".to_string(),
+        ],
+        ReminderAuthorization::Denied => vec![
+            "Open System Settings > Privacy & Security > Reminders and enable access.".to_string(),
+            format!(
+                "If the entry is stale, run `tccutil reset Reminders {BUNDLE_IDENTIFIER}` from a terminal, then rerun `icalctl reminders lists`."
+            ),
+        ],
+        ReminderAuthorization::Restricted => vec![
+            "Reminders access is restricted by system policy; contact the device administrator."
+                .to_string(),
+        ],
+        ReminderAuthorization::Unknown => vec![
+            "macOS returned an unknown Reminders authorization status; rerun from a normal terminal and inspect `icalctl doctor --json`."
+                .to_string(),
+        ],
     }
 }
 
@@ -128,5 +180,11 @@ mod tests {
         assert!(report.info_plist.has_full_access_usage_description);
         assert!(report.info_plist.has_legacy_usage_description);
         assert!(report.info_plist.has_write_only_usage_description);
+        assert!(
+            report
+                .info_plist
+                .has_reminders_full_access_usage_description
+        );
+        assert!(report.info_plist.has_reminders_legacy_usage_description);
     }
 }

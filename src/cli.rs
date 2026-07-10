@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(
     name = "icalctl",
-    about = "Read local macOS Apple Calendar data through EventKit"
+    about = "Manage local macOS Apple Calendar and Reminders data through EventKit"
 )]
 pub struct Cli {
     /// Print compact JSON instead of human-friendly text.
@@ -67,12 +67,49 @@ pub struct WriteCalendarSelectorArgs {
     pub source_id: Option<String>,
 }
 
+#[derive(Debug, Args)]
+pub struct ReadReminderListSelectorArgs {
+    /// Reminder list title to include. Can be passed more than once.
+    #[arg(short = 'l', long = "list")]
+    pub lists: Vec<String>,
+
+    /// Exact EventKit reminder list id to include. Can be passed more than once.
+    #[arg(long = "list-id")]
+    pub list_ids: Vec<String>,
+
+    /// Source title that qualifies every --list title.
+    #[arg(long = "list-source", requires = "lists", conflicts_with = "source_id")]
+    pub list_source: Option<String>,
+
+    /// Exact EventKit source id that qualifies every --list title.
+    #[arg(long, requires = "lists")]
+    pub source_id: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ReminderReadFilterArgs {
+    #[command(flatten)]
+    pub list_selector: ReadReminderListSelectorArgs,
+
+    /// Completion state to include.
+    #[arg(long, value_enum, default_value_t = ReminderStateArg::Incomplete)]
+    pub state: ReminderStateArg,
+
+    /// Inclusive lower bound for due dates or datetimes. Undated reminders are excluded.
+    #[arg(long = "due-from", value_name = "VALUE")]
+    pub due_from: Option<String>,
+
+    /// Inclusive upper bound for due dates or datetimes. Undated reminders are excluded.
+    #[arg(long = "due-to", value_name = "VALUE")]
+    pub due_to: Option<String>,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Print EventKit Calendar authorization status.
     Status,
 
-    /// Diagnose Calendar permission and launch-context problems.
+    /// Diagnose Calendar/Reminders permissions and launch-context problems.
     Doctor,
 
     /// List calendars available in Calendar.app.
@@ -297,6 +334,12 @@ pub enum Command {
         command: TravelCommand,
     },
 
+    /// Read local Apple Reminders through EventKit.
+    Reminders {
+        #[command(subcommand)]
+        command: RemindersCommand,
+    },
+
     /// Delete a calendar event by exact EventKit identifier or cached row number.
     Delete {
         /// EventKit event identifier, or row number from the last event list.
@@ -311,6 +354,47 @@ pub enum Command {
     Completions {
         /// Shell to generate completions for.
         shell: Shell,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RemindersCommand {
+    /// Print EventKit Reminders authorization status.
+    Status,
+
+    /// List reminder lists available in Reminders.app.
+    Lists {
+        /// Only include lists from this exact source title.
+        #[arg(long)]
+        source: Option<String>,
+
+        /// Only include lists that allow reminder modifications.
+        #[arg(long)]
+        writable_only: bool,
+    },
+
+    /// Show the system default list for new reminders.
+    DefaultList,
+
+    /// List reminders, defaulting to incomplete items.
+    List {
+        #[command(flatten)]
+        filters: ReminderReadFilterArgs,
+    },
+
+    /// Search reminder title, notes, location, URL, and list name.
+    Search {
+        /// Case-insensitive search query.
+        query: String,
+
+        #[command(flatten)]
+        filters: ReminderReadFilterArgs,
+    },
+
+    /// Show one reminder by exact EventKit identifier or cached row number.
+    Show {
+        /// EventKit reminder identifier, or row number from the last reminder list.
+        id: String,
     },
 }
 
@@ -412,6 +496,14 @@ pub enum IfExistsArg {
     Update,
     #[default]
     Error,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum ReminderStateArg {
+    #[default]
+    Incomplete,
+    Completed,
+    All,
 }
 
 pub fn print_completions(shell: Shell) {
@@ -783,5 +875,126 @@ mod tests {
             } if alarm_minutes_before.is_empty()
                 && notes_file.to_str() == Some("flight-notes.txt")
         ));
+    }
+
+    #[test]
+    fn reminder_status_lists_default_list_and_show_parse() {
+        assert!(matches!(
+            Cli::try_parse_from(["icalctl", "reminders", "status"])
+                .unwrap()
+                .command,
+            Command::Reminders {
+                command: RemindersCommand::Status
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "icalctl",
+                "reminders",
+                "lists",
+                "--source",
+                "iCloud",
+                "--writable-only"
+            ])
+            .unwrap()
+            .command,
+            Command::Reminders {
+                command: RemindersCommand::Lists {
+                    source: Some(source),
+                    writable_only: true,
+                }
+            } if source == "iCloud"
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["icalctl", "reminders", "default-list"])
+                .unwrap()
+                .command,
+            Command::Reminders {
+                command: RemindersCommand::DefaultList
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["icalctl", "reminders", "show", "2"])
+                .unwrap()
+                .command,
+            Command::Reminders {
+                command: RemindersCommand::Show { id }
+            } if id == "2"
+        ));
+    }
+
+    #[test]
+    fn reminder_list_defaults_to_incomplete_and_accepts_repeated_selectors() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "reminders",
+            "list",
+            "--list-id",
+            "A",
+            "--list-id",
+            "B",
+            "--due-from",
+            "2026-07-10",
+            "--due-to",
+            "2026-07-15",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Reminders {
+                command: RemindersCommand::List {
+                    filters: ReminderReadFilterArgs {
+                        state: ReminderStateArg::Incomplete,
+                        list_selector: ReadReminderListSelectorArgs { list_ids, .. },
+                        due_from: Some(from),
+                        due_to: Some(to),
+                    }
+                }
+            } if list_ids == ["A", "B"] && from == "2026-07-10" && to == "2026-07-15"
+        ));
+    }
+
+    #[test]
+    fn reminder_search_accepts_completed_and_source_qualified_title() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "reminders",
+            "search",
+            "report",
+            "--list",
+            "Work",
+            "--list-source",
+            "Exchange",
+            "--state",
+            "completed",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Reminders {
+                command: RemindersCommand::Search {
+                    query,
+                    filters: ReminderReadFilterArgs {
+                        state: ReminderStateArg::Completed,
+                        list_selector: ReadReminderListSelectorArgs {
+                            lists,
+                            list_source: Some(source),
+                            ..
+                        },
+                        ..
+                    }
+                }
+            } if query == "report" && lists == ["Work"] && source == "Exchange"
+        ));
+    }
+
+    #[test]
+    fn reminder_source_qualifier_requires_list_title() {
+        let result =
+            Cli::try_parse_from(["icalctl", "reminders", "list", "--list-source", "iCloud"]);
+
+        assert!(result.is_err());
     }
 }

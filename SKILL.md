@@ -1,11 +1,11 @@
 ---
 name: icalctl
-description: Use when managing local macOS Apple Calendar data with the icalctl CLI, including listing calendars, reading/searching events, producing JSON, creating/updating/deleting events, and safely choosing and confirming the best target calendar before any event write.
+description: Use when managing local macOS Apple Calendar and Reminders data with the icalctl CLI, including reading/searching reminders, listing calendars and reminder lists, producing JSON, creating/updating/deleting events, and safely choosing and confirming targets before writes.
 ---
 
 # icalctl
 
-Use `icalctl` for local macOS Apple Calendar automation through EventKit. It works with the calendars already configured in Calendar.app, including iCloud, Google, Exchange, and local calendars.
+Use `icalctl` for local macOS Apple Calendar and Reminders automation through EventKit. It works with the accounts already configured in Calendar.app and Reminders.app, including iCloud, Google, Exchange, and local accounts.
 
 This project targets Apple Silicon macOS (`aarch64-apple-darwin`). It is for the local Apple Calendar store, not remote Google Calendar APIs.
 
@@ -23,11 +23,14 @@ cargo install --path .
 - Do not create, update, move, or delete an event until the user has explicitly confirmed the final action.
 - For every request to add an event, analyze the best-fit calendar from the user's available calendars and confirm that calendar choice before writing.
 - Prefer exact `--calendar-id` selectors for agent writes and reads. Title-only selectors are acceptable only when the title is unique.
+- Prefer exact `--list-id` selectors for reminder reads. A title-only reminder-list selector is acceptable only when the title is unique; otherwise qualify it by source.
 - Use `icalctl default-calendar --json` before any workflow that intentionally relies on EventKit's implicit default target.
 - Prefer `--dry-run --json` to validate and preview add, batch add, and update plans before asking for final write confirmation.
 - For timezone-less event inputs, `--time-zone <TZID>` controls parsing and stores the same single EventKit timezone. For offset-bearing or travel times, explicit offsets remain authoritative; verify input echoes, UTC fields, and `duration_seconds`.
 - Quote titles, calendar names, notes, locations, and URLs that contain spaces or shell metacharacters.
 - Use row numbers only immediately after a fresh `today`, `upcoming`, `list`, or `search`; otherwise use the exact EventKit id or rerun the list command.
+- Use reminder row numbers only immediately after a fresh `reminders list` or `reminders search`. Event and reminder rows use different cache files and cannot be interchanged.
+- Reminder support is read-only in the current phase. Do not substitute a fake calendar event when the user asks for a reminder; explain that reminder writes are not enabled yet.
 
 If `icalctl` is not installed in `PATH`, run it from the project with:
 
@@ -45,6 +48,14 @@ icalctl status --json
 icalctl doctor --json
 ```
 
+Reminders authorization is separate:
+
+```sh
+icalctl reminders status
+icalctl reminders status --json
+icalctl reminders lists
+```
+
 Useful statuses:
 
 - `FullAccess`: read and write commands can work.
@@ -59,11 +70,16 @@ icalctl calendars
 ```
 
 Use `doctor --json` when access fails. It reports authorization, process and
-launch context, embedded Info.plist keys, and a recommended next command. For
+launch context, both Calendar and Reminders Info.plist keys, and recommended
+next commands. For
 `NSMachErrorDomain` or Mach error 4099, rerun `icalctl calendars` from
 Terminal.app, iTerm, or Ghostty. For a stale denied entry, enable access in
 System Settings first; if needed, run
 `tccutil reset Calendar dev.zyd.icalctl` and request access again.
+
+For a stale Reminders decision, enable access in System Settings first; if
+needed, run `tccutil reset Reminders dev.zyd.icalctl`, then request access with
+`icalctl reminders lists` from a normal terminal.
 
 ## Required Workflow for Adding Events
 
@@ -243,6 +259,40 @@ icalctl default-calendar --json
 ```
 
 Use this before intentionally omitting all calendar selectors from `add`. The JSON output includes the calendar id, title, source, source id, type, writability, and `is_default_for_new_events: true`.
+
+### `reminders`
+
+Read local Apple Reminders with a dedicated command group:
+
+```sh
+icalctl reminders status --json
+icalctl reminders lists --json
+icalctl reminders lists --source iCloud --writable-only --json
+icalctl reminders default-list --json
+icalctl reminders list --json
+icalctl reminders search "report" --json
+icalctl reminders show <reminder-id-or-row> --json
+```
+
+`reminders list` and `reminders search` default to incomplete reminders. Pass
+`--state completed` or `--state all` explicitly when needed. Use repeatable
+`--list-id` selectors for exact automation. Repeatable `--list` selectors are
+allowed, but duplicate titles fail with candidate ids, sources, source ids, and
+writability; qualify a title with `--list-source` or `--source-id`.
+
+Optional `--due-from` and `--due-to` filters exclude undated reminders. A
+date-only upper bound includes the whole local day. JSON preserves date-only
+due/start components as `kind: "date"`; timed values use `kind: "datetime"`
+and report local components, timezone, normalized offset-bearing time, and UTC.
+
+`reminders show` loads public alarm and recurrence details. Reminder priority
+is reported separately as `none`, `high`, `medium`, or `low`; priority does not
+imply an alarm. Current reminder commands do not mutate Reminders data.
+
+Only use the public EventKit reminder surface. Do not inspect private selectors,
+use KVC for Reminders.app-only metadata, or edit the Calendar database. Flags,
+tags, sections, subtasks, attachments, templates, and messaging triggers are
+outside the public boundary.
 
 ### `today`
 
@@ -500,6 +550,16 @@ $XDG_CACHE_HOME/icalctl/last-events.json
 ```
 
 The cache stores only the most recent event rows needed to resolve row numbers for `show`, `update`, and `delete`. Calendar data remains in EventKit. If a row reference is stale or missing, rerun the relevant list/search command.
+
+Reminder rows are stored separately at:
+
+```text
+~/Library/Caches/icalctl/last-reminders.json
+```
+
+or `$XDG_CACHE_HOME/icalctl/last-reminders.json`. Only `reminders list` and
+`reminders search` refresh it, and only `reminders show` consumes it in this
+read-only phase.
 
 ## Safe Examples
 

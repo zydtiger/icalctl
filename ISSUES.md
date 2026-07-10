@@ -214,3 +214,103 @@ Proposed changes:
 Acceptance checks:
 
 - A travel helper, if added, is just a thin convenience wrapper over the generic add/batch path.
+
+## 13. Add first-class Apple Reminders support
+
+**Status: In progress.** Phase 1 is complete; Issue 13 remains open until all
+five phases are complete.
+
+Implementation phases:
+
+- [x] Phase 1: read-only authorization, list discovery/default, list/search/show,
+  due/state filters, public alarm/recurrence detail, diagnostics, and a separate
+  reminder row cache.
+- [ ] Phase 2: safe basic creation with exact-list targeting, dry-run, duplicate
+  handling, date-only/timed due values, priority, and agent confirmation rules.
+- [ ] Phase 3: update, completion/uncompletion, list moves, and delete.
+- [ ] Phase 4: alarms, recurrence, geofences, and Location diagnostics.
+- [ ] Phase 5: structured JSON input, batch creation, guarded integration tests,
+  documentation hardening, and final Issue 13 resolution.
+
+Problem: `icalctl` only manages calendar events even though EventKit also exposes
+the user's Reminders lists and reminder items. Agents need to create a reminder
+that is due on a date, or due at a specific date and time, without turning the
+task into a fake calendar event. The current CLI also cannot express an
+important reminder or attach reminder alarms.
+
+Important reminders and alarms are separate EventKit concepts. Importance maps
+to reminder priority (`none`, `low`, `medium`, or `high`); alarms control when a
+notification or location trigger fires. A reminder must be able to use either
+feature independently or both together.
+
+Proposed changes:
+
+- Add a first-class `reminders` command group with reminder-specific `status`,
+  `lists`, `list`, `search`, `show`, `add`, `update`, `complete`, `uncomplete`,
+  and `delete` commands. Keep event commands backward compatible.
+- Request and diagnose Reminders authorization separately from Calendar access,
+  and embed `NSRemindersFullAccessUsageDescription` plus the legacy
+  `NSRemindersUsageDescription` fallback in `Info.plist`.
+- Target reminder lists safely by exact EventKit id, unique title, or
+  source-qualified title. Reject ambiguous and read-only list selections, show
+  the default reminder list, and apply the same inspect/dry-run/confirm safety
+  rules used for event writes.
+- Support reminders with no due date, a date-only due value, or a due datetime.
+  Preserve the distinction in human and JSON output and support an explicit IANA
+  timezone for timed due values. Date-only reminders must remain all-day rather
+  than being silently converted to midnight.
+- Support EventKit reminder fields: title, notes, URL, location, start date,
+  due date, priority, completion state/date, multiple alarms, and the single
+  recurrence rule EventKit allows. Expose priority as
+  `none|low|medium|high`, with `--important` as a convenience alias for `high`.
+- Support time alarms at the due instant, relative early alarms, and absolute
+  alarm datetimes. Support arrival/departure geofence alarms when coordinates,
+  radius, and proximity are supplied, including the separate Location permission
+  and clear error reporting. Do not imply that priority itself creates an alarm.
+- Add dry-run plans, exact duplicate handling, structured JSON input, batch
+  creation, update/clear semantics, and JSON reports equivalent in safety and
+  provenance to event workflows. Reminder row references must use a separate
+  cache so an event list cannot accidentally resolve a reminder mutation.
+- Document the public EventKit boundary. Reminders.app-only features that EventKit
+  does not publicly expose, such as flags, tags, sections, subtasks, attachments,
+  templates, and messaging triggers, are out of scope unless Apple adds public
+  APIs; do not use private selectors or edit the Calendar database directly.
+
+Suggested CLI examples:
+
+```sh
+icalctl reminders add "Submit report" \
+  --list-id LIST_ID \
+  --due 2026-07-15 \
+  --priority high \
+  --dry-run --json
+
+icalctl reminders add "Call the dentist" \
+  --list-id LIST_ID \
+  --due 2026-07-15T14:30 \
+  --time-zone Europe/Helsinki \
+  --alarm-at-due \
+  --alarm-minutes-before 30 \
+  --json
+```
+
+Acceptance checks:
+
+- Creating with `--due 2026-07-15` reads back as a date-only/all-day reminder;
+  creating with `--due 2026-07-15T14:30 --time-zone Europe/Helsinki` reads back
+  with the same local due time and normalized instant.
+- `--important` and `--priority high` both create a high-priority reminder, and
+  neither adds an alarm unless an alarm option is also supplied.
+- `--alarm-at-due` produces an EventKit display alarm at the timed due value;
+  multiple early or absolute alarms round-trip in `show --json`.
+- Complete/uncomplete preserves an explicit completion timestamp correctly, and
+  update can clear due/start dates, priority, recurrence, location, URL, notes,
+  and alarms without changing omitted fields.
+- Duplicate reminder-list titles fail with stable candidate ids and sources;
+  exact `--list-id` always selects the intended writable list.
+- Dry-run performs permission, list, date/timezone, priority, recurrence, URL,
+  location, and alarm validation without calling EventKit save APIs.
+- Unit tests cover date-only versus timed due components, priority mapping,
+  alarm validation, recurrence serialization, selector ambiguity, and cache
+  separation. An ignored guarded integration test creates, reads, completes,
+  uncompletes, and deletes a reminder only in an exact `icalctl Test` list.

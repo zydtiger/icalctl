@@ -1,5 +1,6 @@
 use crate::models::{
     AlarmReport, BatchReport, CalendarReport, EventDraftReport, EventReport, JsonOutput,
+    ReminderAlarmReport, ReminderDateKind, ReminderDateReport, ReminderListReport, ReminderReport,
 };
 use chrono::DateTime;
 
@@ -9,8 +10,12 @@ pub fn print_human_output(output: &JsonOutput) {
             println!("Calendar authorization: {}", status.authorization);
         }
         JsonOutput::Doctor { doctor } => {
-            println!("Calendar diagnostics");
-            println!("authorization: {}", doctor.authorization);
+            println!("EventKit diagnostics");
+            println!("Calendar authorization: {}", doctor.authorization);
+            println!(
+                "Reminders authorization: {}",
+                doctor.reminders_authorization
+            );
             println!(
                 "process: {} [{}]",
                 doctor.process.executable, doctor.process.pid
@@ -26,6 +31,13 @@ pub fn print_human_output(output: &JsonOutput) {
             for step in &doctor.remediation {
                 println!("- {step}");
             }
+            println!(
+                "recommended Reminders command: {}",
+                doctor.recommended_reminders_command
+            );
+            for step in &doctor.reminders_remediation {
+                println!("- {step}");
+            }
         }
         JsonOutput::Calendars { calendars } => {
             println!("Calendars ({})", calendars.len());
@@ -37,6 +49,16 @@ pub fn print_human_output(output: &JsonOutput) {
             println!("Default calendar for new events");
             print_calendar(calendar);
         }
+        JsonOutput::ReminderStatus(status) => {
+            println!("Reminders authorization: {}", status.authorization);
+        }
+        JsonOutput::ReminderLists { lists } => print_reminder_lists(lists),
+        JsonOutput::DefaultReminderList { list } => {
+            println!("Default list for new reminders");
+            print_reminder_list(list);
+        }
+        JsonOutput::Reminders { reminders } => print_reminders(reminders),
+        JsonOutput::Reminder { reminder } => print_reminder_detail(reminder),
         JsonOutput::Events { events } => print_events(events),
         JsonOutput::Event { event } => print_event_detail(event),
         JsonOutput::DryRun { draft, .. } => print_dry_run(draft),
@@ -44,6 +66,174 @@ pub fn print_human_output(output: &JsonOutput) {
         JsonOutput::Deleted { deleted } => {
             println!("Deleted event: {} [{}]", deleted.title, deleted.id);
         }
+    }
+}
+
+fn print_reminder_lists(lists: &[ReminderListReport]) {
+    println!("Reminder lists ({})", lists.len());
+    for list in lists {
+        print_reminder_list(list);
+    }
+}
+
+fn print_reminder_list(list: &ReminderListReport) {
+    let source = list.source.as_deref().unwrap_or("unknown source");
+    let default_marker = if list.is_default_for_new_reminders {
+        " default-for-new-reminders=true"
+    } else {
+        ""
+    };
+    println!(
+        "- {} [{}] source={} writable={} subscribed={} id={}{}",
+        list.title,
+        list.list_type,
+        source,
+        list.allows_modifications,
+        list.is_subscribed,
+        list.id,
+        default_marker
+    );
+}
+
+fn print_reminders(reminders: &[ReminderReport]) {
+    println!("Reminders ({})", reminders.len());
+    if reminders.is_empty() {
+        println!("- no reminders found");
+        return;
+    }
+    for (index, reminder) in reminders.iter().enumerate() {
+        let state = if reminder.completed {
+            "completed"
+        } else {
+            "incomplete"
+        };
+        let list = reminder.list.as_deref().unwrap_or("unknown list");
+        let due = reminder
+            .due
+            .as_ref()
+            .map(reminder_date_label)
+            .unwrap_or_else(|| "undated".to_string());
+        println!(
+            "{}. {} [{}] due={} ({}) [{}]",
+            index + 1,
+            reminder.title,
+            state,
+            due,
+            list,
+            reminder.id
+        );
+    }
+}
+
+fn print_reminder_detail(reminder: &ReminderReport) {
+    println!("{}", reminder.title);
+    println!("id: {}", reminder.id);
+    println!(
+        "state: {}",
+        if reminder.completed {
+            "completed"
+        } else {
+            "incomplete"
+        }
+    );
+    if let Some(completion_date) = &reminder.completion_date {
+        println!("completed at: {completion_date}");
+    }
+    println!(
+        "priority: {} ({})",
+        reminder_priority_label(&reminder.priority),
+        reminder.priority_value
+    );
+    if let Some(list) = &reminder.list {
+        println!("list: {list}");
+    }
+    if let Some(list_id) = &reminder.list_id {
+        println!("list id: {list_id}");
+    }
+    if let Some(source) = &reminder.list_source {
+        if let Some(source_id) = &reminder.list_source_id {
+            println!("list source: {source} [{source_id}]");
+        } else {
+            println!("list source: {source}");
+        }
+    }
+    if let Some(due) = &reminder.due {
+        println!("due: {}", reminder_date_label(due));
+    } else {
+        println!("due: undated");
+    }
+    if let Some(start) = &reminder.start {
+        println!("start: {}", reminder_date_label(start));
+    }
+    if let Some(location) = &reminder.location {
+        println!("location: {location}");
+    }
+    if let Some(url) = &reminder.url {
+        println!("url: {url}");
+    }
+    if let Some(alarms) = &reminder.alarms {
+        println!("alarms: {}", alarms.len());
+        for alarm in alarms {
+            println!("- {}", reminder_alarm_label(alarm));
+        }
+    }
+    if let Some(rules) = &reminder.recurrence_rules {
+        println!("recurrence rules: {}", rules.len());
+        for rule in rules {
+            println!("- every {} {}", rule.interval, rule.frequency);
+        }
+    }
+    if let Some(notes) = &reminder.notes {
+        println!();
+        println!("{notes}");
+    }
+}
+
+fn reminder_date_label(value: &ReminderDateReport) -> String {
+    match value.kind {
+        ReminderDateKind::Date => value
+            .date
+            .clone()
+            .unwrap_or_else(|| "invalid date".to_string()),
+        ReminderDateKind::Datetime => {
+            let display = value
+                .normalized
+                .as_ref()
+                .or(value.local.as_ref())
+                .cloned()
+                .unwrap_or_else(|| "invalid datetime".to_string());
+            match &value.time_zone {
+                Some(time_zone) => format!("{display} [{time_zone}]"),
+                None => display,
+            }
+        }
+    }
+}
+
+fn reminder_alarm_label(alarm: &ReminderAlarmReport) -> String {
+    if let Some(date) = &alarm.absolute_date {
+        return format!("{} at {date}", alarm.alarm_type);
+    }
+    if alarm.proximity != "none" {
+        let location = alarm
+            .structured_location
+            .as_ref()
+            .and_then(|location| location.title.as_deref())
+            .unwrap_or("location");
+        return format!("{} {location}", alarm.proximity);
+    }
+    if let Some(offset) = alarm.relative_offset_seconds {
+        return format!("{} at relative offset {} seconds", alarm.alarm_type, offset);
+    }
+    alarm.alarm_type.clone()
+}
+
+fn reminder_priority_label(priority: &crate::models::ReminderPriority) -> &'static str {
+    match priority {
+        crate::models::ReminderPriority::None => "none",
+        crate::models::ReminderPriority::High => "high",
+        crate::models::ReminderPriority::Medium => "medium",
+        crate::models::ReminderPriority::Low => "low",
     }
 }
 

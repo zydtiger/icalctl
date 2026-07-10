@@ -1,9 +1,9 @@
 # icalctl
 
-`icalctl` is a macOS command-line interface for the local Apple Calendar store.
-It talks to Apple's EventKit framework from Rust, so it works with the calendars
-already configured in Calendar.app, including iCloud, Google, Exchange, and
-local calendars.
+`icalctl` is a macOS command-line interface for the local Apple Calendar and
+Reminders stores. It talks to Apple's EventKit framework from Rust, so it works
+with accounts already configured in Calendar.app and Reminders.app, including
+iCloud, Google, Exchange, and local accounts.
 
 The command is intended for fast terminal workflows and scripts. Human-readable
 output is the default; pass `--json` to any command for compact JSON.
@@ -18,6 +18,8 @@ This is an early Apple Silicon macOS CLI. It currently supports:
 - validating and importing idempotent JSON event batches
 - compact JSON output
 - cached row-number references for the most recent event list
+- read-only Reminders authorization, list discovery, list/search/show, and a
+  separate reminder row cache
 - shell completion generation
 
 It does not yet implement ICS import/export, recurrence editing UX, invite/RSVP
@@ -28,7 +30,8 @@ workflows, or Homebrew packaging.
 - macOS
 - Apple Calendar configured with the accounts you want to access
 - Rust toolchain for local builds
-- Calendar permission granted through the macOS privacy prompt
+- Calendar and Reminders permissions granted through their separate macOS
+  privacy prompts as needed
 
 The project currently targets Apple Silicon macOS (`aarch64-apple-darwin`).
 
@@ -64,15 +67,16 @@ the repository to keep the installed skill current.
 
 ## Permissions
 
-`icalctl` embeds the Calendar privacy usage strings in the Mach-O binary through
-`embed_plist`. On first real Calendar access, macOS should ask for Calendar
-permission.
+`icalctl` embeds separate Calendar and Reminders privacy usage strings in the
+Mach-O binary through `embed_plist`. macOS authorizes the two EventKit stores
+independently.
 
 Run the first permission test from a normal terminal such as Terminal.app,
 iTerm, or Ghostty:
 
 ```sh
 icalctl calendars
+icalctl reminders lists
 ```
 
 If permission was granted, this should report your calendars. If the command was
@@ -84,14 +88,14 @@ Check current authorization status:
 ```sh
 icalctl status
 icalctl status --json
+icalctl reminders status --json
 icalctl doctor --json
 ```
 
-`doctor` reports the current authorization state, executable path and process
-id, launch terminal, embedded Info.plist keys, and a status-specific next
-command. If an embedded launcher produces `NSMachErrorDomain` or Mach error
-4099, run `icalctl calendars` from Terminal.app, iTerm, or Ghostty so macOS can
-display the Calendar prompt.
+`doctor` reports both authorization states, executable path and process id,
+launch terminal, embedded Info.plist keys, and status-specific next commands.
+If an embedded launcher cannot show a privacy prompt, run `icalctl calendars`
+or `icalctl reminders lists` from Terminal.app, iTerm, or Ghostty.
 
 For a stale denied permission entry, first try enabling Full Calendar Access in
 System Settings > Privacy & Security > Calendars. If necessary, reset this
@@ -100,6 +104,14 @@ binary's Calendar decision and request it again from a normal terminal:
 ```sh
 tccutil reset Calendar dev.zyd.icalctl
 icalctl calendars
+icalctl doctor --json
+```
+
+The equivalent Reminders reset is:
+
+```sh
+tccutil reset Reminders dev.zyd.icalctl
+icalctl reminders lists
 icalctl doctor --json
 ```
 
@@ -119,6 +131,12 @@ icalctl add "Meeting" --start 2026-07-07T09:00 --end 2026-07-07T09:30
 icalctl batch add --file events.json --if-exists skip --dry-run
 icalctl update <event-id-or-row> --location "Library"
 icalctl delete <event-id-or-row>
+icalctl reminders status
+icalctl reminders lists
+icalctl reminders default-list
+icalctl reminders list
+icalctl reminders search report
+icalctl reminders show <reminder-id-or-row>
 ```
 
 Use command-specific help for the full option set:
@@ -128,6 +146,7 @@ icalctl add --help
 icalctl batch add --help
 icalctl update --help
 icalctl delete --help
+icalctl reminders --help
 ```
 
 ## Date Input
@@ -223,6 +242,15 @@ when alarms were not loaded. A successful `add --json` also reports
 Event read-back JSON always includes UTC/local timestamps and duration. When
 EventKit reports an item timezone, it also includes
 `start_in_event_time_zone` and `end_in_event_time_zone`.
+
+Reminder commands use dedicated top-level types: `reminder_status`,
+`reminder_lists`, `default_reminder_list`, `reminders`, and `reminder`.
+`due` and `start` are nested values with `kind: "date"` or
+`kind: "datetime"`. Date-only values keep their calendar date without a fake
+midnight instant. Timed values include the original local components,
+EventKit timezone when present, normalized offset-bearing value, and UTC value.
+List/search responses deliberately leave alarm and recurrence counts null;
+`show` loads the public alarm and recurrence details.
 
 The current JSON contract is schema generation 1. Consumers should dispatch on
 the top-level `type`, treat documented fields as stable, and tolerate additive
@@ -429,6 +457,58 @@ travel schema. This is the canonical recipe:
 }
 ```
 
+## Reading Apple Reminders
+
+Reminders access is separate from Calendar access. Check it and inspect the
+available reminder lists with:
+
+```sh
+icalctl reminders status --json
+icalctl reminders lists --json
+icalctl reminders lists --source iCloud --writable-only --json
+icalctl reminders default-list --json
+```
+
+List and search default to incomplete reminders. Use `--state completed` or
+`--state all` when needed:
+
+```sh
+icalctl reminders list --json
+icalctl reminders list --state all --list-id LIST_ID --json
+icalctl reminders search "report" --state completed --json
+```
+
+`--list` and `--list-id` are repeatable. Exact ids are preferred for scripts.
+A duplicate title fails with candidate list ids, sources, source ids, and
+writability; qualify it with `--list-source` or `--source-id`:
+
+```sh
+icalctl reminders list --list Tasks --list-source iCloud --json
+icalctl reminders list --list Tasks --source-id SOURCE_ID --json
+```
+
+Due filters accept the same date and datetime forms as event range inputs.
+They exclude undated reminders; a date-only `--due-to` includes that entire
+local date:
+
+```sh
+icalctl reminders list --due-from 2026-07-10 --due-to 2026-07-15 --json
+```
+
+Inspect one reminder by exact EventKit id or by a row from the latest reminder
+list/search:
+
+```sh
+icalctl reminders show REMINDER_ID --json
+icalctl reminders show 1 --json
+```
+
+This phase is intentionally read-only. Reminder creation and mutation commands
+are not enabled yet. The adapter uses only Apple's public EventKit API. Features
+that Reminders.app does not expose publicly through EventKit—flags, tags,
+sections, subtasks, attachments, templates, and messaging triggers—are not
+read through private selectors or by editing the Calendar database.
+
 ## Row Cache
 
 List-like commands cache their most recent event rows:
@@ -469,6 +549,15 @@ or, when `XDG_CACHE_HOME` is set:
 ```text
 $XDG_CACHE_HOME/icalctl/last-events.json
 ```
+
+Reminder list/search rows use a different file so event rows can never resolve
+as reminders (or vice versa):
+
+```text
+~/Library/Caches/icalctl/last-reminders.json
+```
+
+or `$XDG_CACHE_HOME/icalctl/last-reminders.json`.
 
 ## Creating Events
 
@@ -662,6 +751,9 @@ icalctl --help
 icalctl status
 icalctl calendars
 icalctl today
+icalctl reminders status
+icalctl reminders lists
+icalctl reminders list
 icalctl completions zsh
 ```
 
@@ -694,8 +786,9 @@ calendar.
 ```text
 clap CLI
   -> command dispatcher
-  -> EventKit adapter via eventkit-rs
-  -> macOS Calendar store
+  -> event adapter via eventkit-rs
+  -> public reminder adapter via objc2-event-kit
+  -> macOS Calendar and Reminders stores
 ```
 
 Main modules:
@@ -708,8 +801,12 @@ Main modules:
 - `src/dates.rs`: local date parsing
 - `src/models.rs`: JSON/report structs
 - `src/output.rs`: human-readable formatting
+- `src/reminders.rs`: testable read service, list selectors, filters, and
+  public-only EventKit reminder bridge
 - `src/travel.rs`: pure deterministic flight-to-event formatting
 - `tests/eventkit_manual.rs`: opt-in real EventKit verification with strict safeguards
 
-`eventkit-rs` is the high-level wrapper. If a future feature needs lower-level
-EventKit access, the likely escape hatch is `objc2-event-kit`.
+`eventkit-rs` remains the high-level event wrapper. Reminders use generated
+`objc2-event-kit` bindings directly because this project must preserve
+date-component semantics and avoid wrapper paths that inspect private reminder
+properties.

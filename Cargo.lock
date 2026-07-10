@@ -293,12 +293,14 @@ name = "icalctl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block2",
  "chrono",
  "chrono-tz",
  "clap",
  "clap_complete",
  "embed_plist",
  "eventkit-rs",
+ "objc2",
  "objc2-event-kit",
  "objc2-foundation",
  "serde",

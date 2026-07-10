@@ -253,6 +253,7 @@ pub fn run(command: Command) -> Result<JsonOutput> {
                 Ok(write_result_output(result))
             }
         },
+        Command::Reminders { command } => crate::reminders::run(command),
         Command::Delete { id, force } => {
             let deleted = delete_event(&id, force)?;
             Ok(JsonOutput::Deleted { deleted })
