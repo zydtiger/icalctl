@@ -6,6 +6,9 @@ use serde::Serialize;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JsonOutput {
     Status(StatusReport),
+    Doctor {
+        doctor: DoctorReport,
+    },
     Calendars {
         calendars: Vec<CalendarReport>,
     },
@@ -39,6 +42,31 @@ impl JsonOutput {
 #[derive(Debug, Serialize)]
 pub struct StatusReport {
     pub authorization: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DoctorReport {
+    pub authorization: String,
+    pub process: ProcessReport,
+    pub info_plist: InfoPlistReport,
+    pub recommended_command: String,
+    pub remediation: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProcessReport {
+    pub pid: u32,
+    pub executable: String,
+    pub terminal_program: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InfoPlistReport {
+    pub embedded: bool,
+    pub bundle_identifier: String,
+    pub has_full_access_usage_description: bool,
+    pub has_legacy_usage_description: bool,
+    pub has_write_only_usage_description: bool,
 }
 
 #[derive(Debug, Serialize)]

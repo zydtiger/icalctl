@@ -30,6 +30,9 @@ pub fn run(command: Command) -> Result<JsonOutput> {
         Command::Status => Ok(JsonOutput::Status(StatusReport {
             authorization: authorization_string(),
         })),
+        Command::Doctor => Ok(JsonOutput::Doctor {
+            doctor: crate::doctor::doctor_report(),
+        }),
         Command::Calendars => {
             let events = authorized_events_manager()?;
             let default_id = match events.default_calendar() {
@@ -549,25 +552,28 @@ pub(crate) fn authorized_events_manager() -> Result<EventsManager> {
         AuthorizationStatus::FullAccess => Ok(EventsManager::new()),
         AuthorizationStatus::NotDetermined => {
             let events = EventsManager::new();
-            if events
-                .request_access()
-                .context("failed to request full Calendar access through EventKit")?
-            {
-                Ok(events)
-            } else {
-                bail!(
-                    "Calendar access was not granted; run from Terminal/Ghostty and approve the macOS prompt"
-                );
+            match events.request_access() {
+                Ok(true) => Ok(events),
+                Ok(false) => bail!(
+                    "Calendar access was not granted (authorization=NotDetermined); run `icalctl calendars` from Terminal.app, iTerm, or Ghostty and approve the macOS Calendar prompt"
+                ),
+                Err(error) => bail!(crate::doctor::access_request_error_message(&error)),
             }
         }
         AuthorizationStatus::WriteOnly => {
-            bail!("Calendar access is write-only; full access is required for read commands")
+            bail!(
+                "Calendar access is write-only (authorization=WriteOnly); enable Full Calendar Access in System Settings > Privacy & Security > Calendars, then run `icalctl doctor --json`"
+            )
         }
         AuthorizationStatus::Denied => {
-            bail!("Calendar access is denied; enable Calendar full access in macOS Settings")
+            bail!(
+                "Calendar access is denied (authorization=Denied); enable Full Calendar Access in System Settings > Privacy & Security > Calendars, then run `icalctl doctor --json`"
+            )
         }
         AuthorizationStatus::Restricted => {
-            bail!("Calendar access is restricted by system policy")
+            bail!(
+                "Calendar access is restricted (authorization=Restricted); ask the device administrator to allow Calendar access, then run `icalctl doctor --json`"
+            )
         }
     }
 }

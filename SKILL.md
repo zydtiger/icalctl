@@ -42,6 +42,7 @@ Start with authorization when Calendar access is uncertain:
 ```sh
 icalctl status
 icalctl status --json
+icalctl doctor --json
 ```
 
 Useful statuses:
@@ -56,6 +57,13 @@ To trigger the permission prompt and verify calendars:
 ```sh
 icalctl calendars
 ```
+
+Use `doctor --json` when access fails. It reports authorization, process and
+launch context, embedded Info.plist keys, and a recommended next command. For
+`NSMachErrorDomain` or Mach error 4099, rerun `icalctl calendars` from
+Terminal.app, iTerm, or Ghostty. For a stale denied entry, enable access in
+System Settings first; if needed, run
+`tccutil reset Calendar dev.zyd.icalctl` and request access again.
 
 ## Required Workflow for Adding Events
 
@@ -181,6 +189,20 @@ icalctl status --json
 ```
 
 Use before read/write operations when permission state is unknown. If status is not `FullAccess`, do not assume event list or write operations will work.
+
+### `doctor`
+
+Diagnose Calendar permission and launch-context failures without requesting
+access or changing Calendar data:
+
+```sh
+icalctl doctor
+icalctl doctor --json
+```
+
+Use the reported `recommended_command` and remediation steps. The JSON includes
+authorization status, process identity, terminal program, bundle identifier,
+and embedded Calendar usage-description checks.
 
 ### `calendars`
 

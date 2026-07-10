@@ -8,6 +8,25 @@ pub fn print_human_output(output: &JsonOutput) {
         JsonOutput::Status(status) => {
             println!("Calendar authorization: {}", status.authorization);
         }
+        JsonOutput::Doctor { doctor } => {
+            println!("Calendar diagnostics");
+            println!("authorization: {}", doctor.authorization);
+            println!(
+                "process: {} [{}]",
+                doctor.process.executable, doctor.process.pid
+            );
+            if let Some(terminal) = &doctor.process.terminal_program {
+                println!("terminal program: {terminal}");
+            }
+            println!(
+                "embedded Info.plist: {} bundle={}",
+                doctor.info_plist.embedded, doctor.info_plist.bundle_identifier
+            );
+            println!("recommended command: {}", doctor.recommended_command);
+            for step in &doctor.remediation {
+                println!("- {step}");
+            }
+        }
         JsonOutput::Calendars { calendars } => {
             println!("Calendars ({})", calendars.len());
             for calendar in calendars {

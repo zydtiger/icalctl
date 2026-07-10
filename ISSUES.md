@@ -97,6 +97,8 @@ Acceptance checks:
 
 ## 6. Make permission bootstrap more diagnosable
 
+**Status: Resolved.** Added parseable `doctor` diagnostics for authorization, process/launch context, embedded privacy metadata, and next steps; permission failures now include current status and targeted Terminal/Mach remediation.
+
 Problem: from an embedded/sandboxed tool environment, `icalctl status --json` returned `NotDetermined`, and `icalctl calendars --json` failed with an EventKit/Mach authorization error. Running outside the sandbox succeeded. The error should point users directly to the right fix.
 
 Proposed changes:

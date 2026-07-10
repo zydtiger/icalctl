@@ -7,6 +7,7 @@ mod calendar;
 mod calendar_selector;
 mod cli;
 mod dates;
+mod doctor;
 mod eventkit_bridge;
 mod models;
 mod output;

@@ -72,6 +72,9 @@ pub enum Command {
     /// Print EventKit Calendar authorization status.
     Status,
 
+    /// Diagnose Calendar permission and launch-context problems.
+    Doctor,
+
     /// List calendars available in Calendar.app.
     Calendars,
 
@@ -342,6 +345,13 @@ mod tests {
         let cli = Cli::try_parse_from(["icalctl", "default-calendar"]).unwrap();
 
         assert!(matches!(cli.command, Command::DefaultCalendar));
+    }
+
+    #[test]
+    fn doctor_command_parses() {
+        let cli = Cli::try_parse_from(["icalctl", "doctor"]).unwrap();
+
+        assert!(matches!(cli.command, Command::Doctor));
     }
 
     #[test]

@@ -84,12 +84,30 @@ Check current authorization status:
 ```sh
 icalctl status
 icalctl status --json
+icalctl doctor --json
+```
+
+`doctor` reports the current authorization state, executable path and process
+id, launch terminal, embedded Info.plist keys, and a status-specific next
+command. If an embedded launcher produces `NSMachErrorDomain` or Mach error
+4099, run `icalctl calendars` from Terminal.app, iTerm, or Ghostty so macOS can
+display the Calendar prompt.
+
+For a stale denied permission entry, first try enabling Full Calendar Access in
+System Settings > Privacy & Security > Calendars. If necessary, reset this
+binary's Calendar decision and request it again from a normal terminal:
+
+```sh
+tccutil reset Calendar dev.zyd.icalctl
+icalctl calendars
+icalctl doctor --json
 ```
 
 ## Commands
 
 ```sh
 icalctl status
+icalctl doctor
 icalctl calendars
 icalctl default-calendar
 icalctl today
