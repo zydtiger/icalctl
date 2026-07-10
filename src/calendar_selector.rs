@@ -68,6 +68,22 @@ pub fn require_single_calendar(
     }
 }
 
+pub fn require_single_writable_calendar(
+    calendars: &[CalendarInfo],
+    selector: &CalendarSelector<'_>,
+) -> Result<CalendarInfo> {
+    let calendar = require_single_calendar(calendars, selector)?;
+    if !calendar.allows_modifications {
+        bail!(
+            "calendar is read-only: {} [{}] source={}",
+            calendar.title,
+            calendar.identifier,
+            calendar.source.as_deref().unwrap_or("unknown")
+        );
+    }
+    Ok(calendar)
+}
+
 fn push_unique(resolved: &mut Vec<CalendarInfo>, calendar: &CalendarInfo) {
     if !resolved
         .iter()
@@ -222,5 +238,44 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved[0].source.as_deref(), Some("iCloud"));
+    }
+
+    #[test]
+    fn missing_calendar_reports_the_requested_selector() {
+        let calendars = vec![calendar("A", "Work", "iCloud", "S1")];
+        let titles = vec!["Missing".to_string()];
+        let error = require_single_calendar(
+            &calendars,
+            &CalendarSelector {
+                titles: &titles,
+                source: Some("iCloud"),
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("calendar not found: \"Missing\""));
+        assert!(error.contains("source \"iCloud\""));
+    }
+
+    #[test]
+    fn writable_resolution_rejects_read_only_calendar() {
+        let mut read_only = calendar("A", "Holidays", "Subscribed", "S1");
+        read_only.allows_modifications = false;
+        let calendars = vec![read_only];
+        let ids = vec!["A".to_string()];
+        let error = require_single_writable_calendar(
+            &calendars,
+            &CalendarSelector {
+                ids: &ids,
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("calendar is read-only: Holidays [A]"));
+        assert!(error.contains("source=Subscribed"));
     }
 }

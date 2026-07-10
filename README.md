@@ -576,6 +576,30 @@ icalctl today
 icalctl completions zsh
 ```
 
+The manual EventKit suite is ignored by ordinary `cargo test`. Its read-only
+permission/default-calendar check can be run explicitly:
+
+```sh
+cargo test --test eventkit_manual permission_and_default_calendar_are_parseable \
+  -- --ignored --nocapture
+```
+
+The round-trip test performs a real create, read-back, and delete. Before using
+it, create a writable calendar named exactly `icalctl Test`, inspect its exact
+id, and explicitly opt in:
+
+```sh
+ICALCTL_RUN_EVENTKIT_TESTS=1 \
+ICALCTL_TEST_CALENDAR_ID=EXACT_TEST_CALENDAR_ID \
+cargo test --test eventkit_manual \
+  create_read_back_and_delete_on_explicit_test_calendar \
+  -- --ignored --nocapture
+```
+
+The test refuses any other calendar title and installs a cleanup guard, but it
+still mutates real Calendar data and should only run against the dedicated test
+calendar.
+
 ## Architecture
 
 ```text
@@ -595,6 +619,7 @@ Main modules:
 - `src/dates.rs`: local date parsing
 - `src/models.rs`: JSON/report structs
 - `src/output.rs`: human-readable formatting
+- `tests/eventkit_manual.rs`: opt-in real EventKit verification with strict safeguards
 
 `eventkit-rs` is the high-level wrapper. If a future feature needs lower-level
 EventKit access, the likely escape hatch is `objc2-event-kit`.

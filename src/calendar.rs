@@ -1,5 +1,7 @@
 use crate::cache::resolve_event_ref;
-use crate::calendar_selector::{CalendarSelector, require_single_calendar, resolve_calendars};
+use crate::calendar_selector::{
+    CalendarSelector, require_single_writable_calendar, resolve_calendars,
+};
 use crate::cli::{
     AvailabilityArg, BatchCommand, Command, IfExistsArg, ReadCalendarSelectorArgs,
     WriteCalendarSelectorArgs,
@@ -893,7 +895,7 @@ pub(crate) fn resolve_target_calendar(
         let calendars = list_calendars(events)?;
         let titles: Vec<String> = args.calendar.iter().cloned().collect();
         let ids: Vec<String> = args.calendar_id.iter().cloned().collect();
-        require_single_calendar(
+        require_single_writable_calendar(
             &calendars,
             &CalendarSelector {
                 titles: &titles,
@@ -903,15 +905,6 @@ pub(crate) fn resolve_target_calendar(
             },
         )?
     };
-
-    if !calendar.allows_modifications {
-        bail!(
-            "calendar is read-only: {} [{}] source={}",
-            calendar.title,
-            calendar.identifier,
-            calendar.source.as_deref().unwrap_or("unknown")
-        );
-    }
 
     Ok(calendar)
 }

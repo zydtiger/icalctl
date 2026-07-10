@@ -183,6 +183,8 @@ Acceptance checks:
 
 ## 11. Add integration tests around risky EventKit behavior
 
+**Status: Resolved.** Selector and datetime unit matrices now cover unique/ambiguous/missing/read-only calendars, ids and source qualifiers, offset-crossing durations, all-day ranges, and timezone edge cases; an ignored opt-in suite verifies real permission/default state and guarded create/read-back/delete behavior on an exact `icalctl Test` calendar.
+
 Problem: the riskiest behavior depends on real EventKit state: duplicate calendar titles, default calendar selection, permissions, timezone parsing, and read-back.
 
 Proposed changes:
