@@ -211,6 +211,7 @@ List calendars available in Calendar.app.
 ```sh
 icalctl calendars
 icalctl calendars --json
+icalctl calendars --source iCloud --writable-only --json
 ```
 
 Use this before adding events so the agent can choose the best-fit calendar. The JSON form is the preferred source for exact calendar ids and source metadata.
@@ -218,6 +219,8 @@ Use this before adding events so the agent can choose the best-fit calendar. The
 When duplicate titles exist, title-only selection fails and prints the matching source, source id, calendar id, and writability. Use `--calendar-id`, or qualify a title with `--calendar-source` or `--source-id`.
 
 The default target, when EventKit reports one, has `is_default_for_new_events: true`.
+Use `--source <SOURCE>` for an exact source-title filter and
+`--writable-only` when selecting destinations for writes.
 
 ### `default-calendar`
 

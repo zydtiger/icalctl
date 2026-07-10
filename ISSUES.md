@@ -115,6 +115,8 @@ Acceptance checks:
 
 ## 7. Safer calendar filtering for reads
 
+**Status: Resolved.** Read commands reuse exact id/source-aware calendar resolution, reject ambiguous titles with candidate details, accept multiple calendar ids, and calendar discovery now supports exact `--source` and `--writable-only` filters.
+
 Problem: read commands also filter calendars by title only. Duplicate titles can make `list/search/today/upcoming --calendar Calendar` include the wrong calendar or multiple unintended calendars, depending on the EventKit wrapper behavior.
 
 Proposed changes:

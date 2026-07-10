@@ -242,6 +242,12 @@ icalctl today --calendar-source iCloud --calendar Calendar
 icalctl today --source-id SOURCE_ID --calendar Calendar
 ```
 
+Filter calendar discovery itself by exact source title and writability:
+
+```sh
+icalctl calendars --source iCloud --writable-only --json
+```
+
 Before relying on the implicit EventKit default, inspect it explicitly:
 
 ```sh

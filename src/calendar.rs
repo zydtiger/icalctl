@@ -33,7 +33,10 @@ pub fn run(command: Command) -> Result<JsonOutput> {
         Command::Doctor => Ok(JsonOutput::Doctor {
             doctor: crate::doctor::doctor_report(),
         }),
-        Command::Calendars => {
+        Command::Calendars {
+            source,
+            writable_only,
+        } => {
             let events = authorized_events_manager()?;
             let default_id = match events.default_calendar() {
                 Ok(calendar) => Some(calendar.identifier),
@@ -43,6 +46,7 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             let calendars = events
                 .list_calendars()
                 .context("failed to list Calendar calendars through EventKit")?;
+            let calendars = filter_calendar_list(calendars, source.as_deref(), writable_only);
             let calendars = calendar_reports(&calendars, default_id.as_deref());
             Ok(JsonOutput::Calendars { calendars })
         }
@@ -651,6 +655,18 @@ fn calendar_reports(calendars: &[CalendarInfo], default_id: Option<&str>) -> Vec
         .collect()
 }
 
+fn filter_calendar_list(
+    calendars: Vec<CalendarInfo>,
+    source: Option<&str>,
+    writable_only: bool,
+) -> Vec<CalendarInfo> {
+    calendars
+        .into_iter()
+        .filter(|calendar| source.is_none_or(|source| calendar.source.as_deref() == Some(source)))
+        .filter(|calendar| !writable_only || calendar.allows_modifications)
+        .collect()
+}
+
 fn event_calendar(events: &EventsManager, event: &EventItem) -> Result<CalendarInfo> {
     let calendars = list_calendars(events)?;
     event
@@ -996,6 +1012,21 @@ mod tests {
         );
         assert!(reports[1].is_default_for_new_events);
         assert!(reports[1].allows_modifications);
+    }
+
+    #[test]
+    fn calendar_list_filters_source_and_writability() {
+        let icloud = calendar("A", "Personal");
+        let mut exchange = calendar("B", "Work");
+        exchange.source = Some("Exchange".to_string());
+        let mut read_only = calendar("C", "Holidays");
+        read_only.allows_modifications = false;
+        let calendars = vec![icloud, exchange, read_only];
+
+        let icloud_writable = filter_calendar_list(calendars, Some("iCloud"), true);
+
+        assert_eq!(icloud_writable.len(), 1);
+        assert_eq!(icloud_writable[0].identifier, "A");
     }
 
     #[test]

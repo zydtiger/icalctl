@@ -76,7 +76,15 @@ pub enum Command {
     Doctor,
 
     /// List calendars available in Calendar.app.
-    Calendars,
+    Calendars {
+        /// Only include calendars from this exact source title.
+        #[arg(long)]
+        source: Option<String>,
+
+        /// Only include calendars that allow event modifications.
+        #[arg(long)]
+        writable_only: bool,
+    },
 
     /// Show the system default calendar for new events.
     DefaultCalendar,
@@ -352,6 +360,51 @@ mod tests {
         let cli = Cli::try_parse_from(["icalctl", "doctor"]).unwrap();
 
         assert!(matches!(cli.command, Command::Doctor));
+    }
+
+    #[test]
+    fn calendars_accepts_source_and_writable_filters() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "calendars",
+            "--source",
+            "iCloud",
+            "--writable-only",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Calendars {
+                source: Some(source),
+                writable_only: true,
+            } if source == "iCloud"
+        ));
+    }
+
+    #[test]
+    fn read_commands_accept_multiple_exact_calendar_ids() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "list",
+            "--from",
+            "2026-07-10",
+            "--to",
+            "2026-07-10",
+            "--calendar-id",
+            "A",
+            "--calendar-id",
+            "B",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::List {
+                calendar_selector: ReadCalendarSelectorArgs { calendar_ids, .. },
+                ..
+            } if calendar_ids == ["A", "B"]
+        ));
     }
 
     #[test]
