@@ -24,7 +24,10 @@ use eventkit::{
     AlarmInfo, AlarmProximity, AuthorizationStatus, CalendarInfo, EventAvailability, EventDraft,
     EventItem, EventKitError, EventPatch, EventsManager,
 };
-use std::io::{self, Write};
+use serde::Deserialize;
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 
 pub fn run(command: Command) -> Result<JsonOutput> {
     match command {
@@ -115,6 +118,8 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             end,
             calendar_selector,
             notes,
+            notes_file,
+            json_file,
             location,
             url,
             all_day,
@@ -125,12 +130,14 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             duplicate_window_seconds,
             dry_run,
         } => {
-            let result = add_event(AddEventInput {
+            let input = resolve_add_command(AddCommandInput {
                 title,
                 start,
                 end,
                 calendar_selector,
                 notes,
+                notes_file,
+                json_file,
                 location,
                 url,
                 all_day,
@@ -141,6 +148,7 @@ pub fn run(command: Command) -> Result<JsonOutput> {
                 duplicate_window_seconds,
                 dry_run,
             })?;
+            let result = add_event(input)?;
             Ok(write_result_output(result))
         }
         Command::Update {
@@ -203,6 +211,25 @@ pub fn run(command: Command) -> Result<JsonOutput> {
     }
 }
 
+struct AddCommandInput {
+    title: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+    calendar_selector: WriteCalendarSelectorArgs,
+    notes: Option<String>,
+    notes_file: Option<PathBuf>,
+    json_file: Option<PathBuf>,
+    location: Option<String>,
+    url: Option<String>,
+    all_day: bool,
+    availability: Option<AvailabilityArg>,
+    time_zone: Option<String>,
+    alarm_minutes_before: Vec<i64>,
+    if_exists: IfExistsArg,
+    duplicate_window_seconds: i64,
+    dry_run: bool,
+}
+
 struct AddEventInput {
     title: String,
     start: String,
@@ -218,6 +245,29 @@ struct AddEventInput {
     if_exists: IfExistsArg,
     duplicate_window_seconds: i64,
     dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JsonAddDraft {
+    title: String,
+    start: String,
+    end: String,
+    calendar: Option<String>,
+    calendar_id: Option<String>,
+    calendar_source: Option<String>,
+    source_id: Option<String>,
+    notes: Option<String>,
+    location: Option<String>,
+    url: Option<String>,
+    #[serde(default)]
+    all_day: bool,
+    #[serde(default)]
+    timed: bool,
+    availability: Option<AvailabilityArg>,
+    time_zone: Option<String>,
+    #[serde(default)]
+    alarm_minutes_before: Vec<i64>,
 }
 
 struct UpdateEventInput {
@@ -254,6 +304,130 @@ fn write_result_output(result: WriteEventResult) -> JsonOutput {
             draft,
         },
     }
+}
+
+fn resolve_add_command(input: AddCommandInput) -> Result<AddEventInput> {
+    let AddCommandInput {
+        title,
+        start,
+        end,
+        calendar_selector,
+        notes,
+        notes_file,
+        json_file,
+        location,
+        url,
+        all_day,
+        availability,
+        time_zone,
+        alarm_minutes_before,
+        if_exists,
+        duplicate_window_seconds,
+        dry_run,
+    } = input;
+
+    if let Some(path) = json_file {
+        if title.is_some()
+            || start.is_some()
+            || end.is_some()
+            || !write_selector_is_empty(&calendar_selector)
+            || notes.is_some()
+            || notes_file.is_some()
+            || location.is_some()
+            || url.is_some()
+            || all_day
+            || availability.is_some()
+            || time_zone.is_some()
+            || !alarm_minutes_before.is_empty()
+        {
+            bail!(
+                "--json-file cannot be combined with individual event fields; keep duplicate policy, tolerance, and dry-run flags on the command"
+            );
+        }
+        let draft = read_json_add_draft(&path)?;
+        if draft.all_day && draft.timed {
+            bail!("JSON event cannot set both all_day and timed to true");
+        }
+        validate_json_selector(&draft)?;
+        return Ok(AddEventInput {
+            title: draft.title,
+            start: draft.start,
+            end: draft.end,
+            calendar_selector: WriteCalendarSelectorArgs {
+                calendar: draft.calendar,
+                calendar_id: draft.calendar_id,
+                calendar_source: draft.calendar_source,
+                source_id: draft.source_id,
+            },
+            notes: draft.notes,
+            location: draft.location,
+            url: draft.url,
+            all_day: draft.all_day && !draft.timed,
+            availability: draft.availability,
+            time_zone: draft.time_zone,
+            alarm_minutes_before: draft.alarm_minutes_before,
+            if_exists,
+            duplicate_window_seconds,
+            dry_run,
+        });
+    }
+
+    let notes = match notes_file {
+        Some(path) => Some(read_notes_file(&path)?),
+        None => notes,
+    };
+    Ok(AddEventInput {
+        title: title.context("event title is required unless --json-file is used")?,
+        start: start.context("--start is required unless --json-file is used")?,
+        end: end.context("--end is required unless --json-file is used")?,
+        calendar_selector,
+        notes,
+        location,
+        url,
+        all_day,
+        availability,
+        time_zone,
+        alarm_minutes_before,
+        if_exists,
+        duplicate_window_seconds,
+        dry_run,
+    })
+}
+
+fn read_notes_file(path: &Path) -> Result<String> {
+    if path == Path::new("-") {
+        let mut notes = String::new();
+        io::stdin()
+            .read_to_string(&mut notes)
+            .context("failed to read event notes from stdin")?;
+        return Ok(notes);
+    }
+    fs::read_to_string(path)
+        .with_context(|| format!("failed to read notes file {}", path.display()))
+}
+
+fn read_json_add_draft(path: &Path) -> Result<JsonAddDraft> {
+    let contents = fs::read(path)
+        .with_context(|| format!("failed to read JSON event file {}", path.display()))?;
+    serde_json::from_slice(&contents)
+        .with_context(|| format!("failed to parse JSON event file {}", path.display()))
+}
+
+fn validate_json_selector(draft: &JsonAddDraft) -> Result<()> {
+    if draft.calendar_id.is_some()
+        && (draft.calendar.is_some()
+            || draft.calendar_source.is_some()
+            || draft.source_id.is_some())
+    {
+        bail!("JSON calendar_id cannot be combined with calendar, calendar_source, or source_id");
+    }
+    if draft.calendar_source.is_some() && draft.source_id.is_some() {
+        bail!("JSON calendar_source and source_id cannot be combined");
+    }
+    if (draft.calendar_source.is_some() || draft.source_id.is_some()) && draft.calendar.is_none() {
+        bail!("JSON calendar_source and source_id require calendar");
+    }
+    Ok(())
 }
 
 fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
@@ -316,9 +490,7 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
             .transpose()?;
         return Ok(WriteEventResult::DryRun(Box::new(EventDraftReport {
             operation: operation.to_string(),
-            event_id: duplicates
-                .first()
-                .map(|event| event.identifier.clone()),
+            event_id: duplicates.first().map(|event| event.identifier.clone()),
             title: input.title,
             start: start.to_rfc3339(),
             end: end.to_rfc3339(),
@@ -1132,6 +1304,15 @@ impl From<AvailabilityArg> for EventAvailability {
 mod tests {
     use super::*;
     use eventkit::CalendarType;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_test_path(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("icalctl-{name}-{nonce}"))
+    }
 
     #[test]
     fn nullable_patch_clear_wins() {
@@ -1139,6 +1320,44 @@ mod tests {
         assert_eq!(nullable_patch(Some("notes"), true), Some(None));
         assert_eq!(nullable_patch(None, true), Some(None));
         assert_eq!(nullable_patch(None, false), None);
+    }
+
+    #[test]
+    fn notes_file_preserves_exact_utf8_contents() {
+        let path = temporary_test_path("notes.txt");
+        let expected = "First line\nSecond line\n\nFinal line without trimming";
+        fs::write(&path, expected).unwrap();
+
+        let actual = read_notes_file(&path).unwrap();
+        fs::remove_file(path).unwrap();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn json_event_draft_supports_structured_add_fields() {
+        let draft: JsonAddDraft = serde_json::from_str(
+            r#"{
+                "title": "Meeting",
+                "start": "2026-07-10T09:00",
+                "end": "2026-07-10T10:00",
+                "calendar_id": "CAL-1",
+                "notes": "Agenda",
+                "location": "Room 3",
+                "url": "https://example.com",
+                "availability": "busy",
+                "time_zone": "Asia/Shanghai",
+                "alarm_minutes_before": [10],
+                "timed": true
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(draft.calendar_id.as_deref(), Some("CAL-1"));
+        assert_eq!(draft.notes.as_deref(), Some("Agenda"));
+        assert_eq!(draft.alarm_minutes_before, [10]);
+        assert!(draft.timed);
+        assert!(!draft.all_day);
     }
 
     #[test]

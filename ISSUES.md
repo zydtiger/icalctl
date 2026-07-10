@@ -166,6 +166,8 @@ Acceptance checks:
 
 ## 10. Improve shell ergonomics for long notes and structured event details
 
+**Status: Resolved.** Add now reads exact UTF-8 notes from files or stdin and accepts strict, complete JSON event drafts covering calendar selection, content, availability, alarms, timezone, and all-day/timed state with full dry-run validation.
+
 Problem: passing multi-line notes through shell arguments is awkward and error-prone.
 
 Proposed changes:

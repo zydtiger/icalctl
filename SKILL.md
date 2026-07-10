@@ -324,6 +324,8 @@ Options:
 - `--calendar-source <SOURCE> --calendar <CALENDAR>`: source-qualified calendar title.
 - `--source-id <SOURCE_ID> --calendar <CALENDAR>`: source-id-qualified calendar title.
 - `--notes <NOTES>`: event notes.
+- `--notes-file <PATH>`: read exact UTF-8 notes from a file; use `-` for stdin. Conflicts with `--notes`.
+- `--json-file <PATH>`: read a complete structured event draft; do not combine it with individual event fields.
 - `--location <LOCATION>`: event location.
 - `--url <URL>`: event URL.
 - `--all-day`: mark the event as all-day.
@@ -336,6 +338,13 @@ Options:
 - `--json`: print the created event as JSON.
 
 The event JSON has `calendar_selection: "explicit"` when a calendar selector was passed and `calendar_selection: "eventkit_default"` when EventKit's default was used. It reports `write_action` as `created`, `skipped`, or `updated`. Prefer `--if-exists skip` for retry-safe agent writes; preview it first because a duplicate-window tolerance can match a nearby event.
+
+JSON draft files require `title`, `start`, and `end` and support `calendar`,
+`calendar_id`, `calendar_source`, `source_id`, `notes`, `location`, `url`,
+`availability`, `time_zone`, `alarm_minutes_before`, `all_day`, and `timed`.
+Keep `--if-exists`, `--duplicate-window-seconds`, `--dry-run`, and `--json` on
+the command. Always dry-run a JSON draft and inspect its resolved calendar and
+times before confirmation.
 
 Never run `add` until the calendar choice and final event details have been confirmed by the user.
 

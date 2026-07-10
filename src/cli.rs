@@ -145,22 +145,31 @@ pub enum Command {
     /// Create a calendar event.
     Add {
         /// Event title.
-        title: String,
+        #[arg(required_unless_present = "json_file")]
+        title: Option<String>,
 
         /// Start date or datetime. Examples: 2026-07-06, 2026-07-06T09:00.
-        #[arg(long)]
-        start: String,
+        #[arg(long, required_unless_present = "json_file")]
+        start: Option<String>,
 
         /// End date or datetime. Date-only values include the whole day.
-        #[arg(long)]
-        end: String,
+        #[arg(long, required_unless_present = "json_file")]
+        end: Option<String>,
 
         #[command(flatten)]
         calendar_selector: WriteCalendarSelectorArgs,
 
         /// Event notes.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "notes_file")]
         notes: Option<String>,
+
+        /// Read exact event notes from a UTF-8 file, or stdin with -.
+        #[arg(long, value_name = "PATH")]
+        notes_file: Option<PathBuf>,
+
+        /// Read the complete event draft from a JSON file.
+        #[arg(long, value_name = "PATH")]
+        json_file: Option<PathBuf>,
 
         /// Event location.
         #[arg(long)]
@@ -484,6 +493,45 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn add_accepts_notes_file_or_complete_json_file() {
+        let notes = Cli::try_parse_from([
+            "icalctl",
+            "add",
+            "Meeting",
+            "--start",
+            "2026-07-10T09:00",
+            "--end",
+            "2026-07-10T10:00",
+            "--notes-file",
+            "notes.txt",
+        ]);
+        let json =
+            Cli::try_parse_from(["icalctl", "add", "--json-file", "event.json", "--dry-run"]);
+
+        assert!(notes.is_ok());
+        assert!(json.is_ok());
+    }
+
+    #[test]
+    fn add_rejects_notes_and_notes_file_together() {
+        let result = Cli::try_parse_from([
+            "icalctl",
+            "add",
+            "Meeting",
+            "--start",
+            "2026-07-10T09:00",
+            "--end",
+            "2026-07-10T10:00",
+            "--notes",
+            "inline",
+            "--notes-file",
+            "notes.txt",
+        ]);
+
+        assert!(result.is_err());
     }
 
     #[test]

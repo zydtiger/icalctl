@@ -434,6 +434,45 @@ icalctl add "Project sync" \
 
 Live add JSON reports `write_action` as `created`, `skipped`, or `updated`.
 
+For exact multiline notes, read UTF-8 text from a file or stdin. Contents are
+not trimmed or newline-normalized:
+
+```sh
+icalctl add "Project sync" --start 2026-07-07T09:00 --end 2026-07-07T09:30 \
+  --notes-file notes.txt
+printf 'First line\nSecond line\n' | \
+  icalctl add "Project sync" --start 2026-07-07T09:00 --end 2026-07-07T09:30 \
+  --notes-file -
+```
+
+Use `--json-file` for a complete structured single-event draft. Individual
+event fields cannot be mixed with the file; command-level duplicate, dry-run,
+and JSON-output flags remain available:
+
+```json
+{
+  "title": "Project sync",
+  "start": "2026-07-07T09:00",
+  "end": "2026-07-07T09:30",
+  "calendar_id": "CALENDAR_ID",
+  "notes": "Agenda",
+  "location": "Room 3",
+  "url": "https://example.com/event",
+  "availability": "busy",
+  "time_zone": "Asia/Shanghai",
+  "alarm_minutes_before": [10],
+  "timed": true
+}
+```
+
+```sh
+icalctl add --json-file event.json --dry-run --json
+```
+
+The JSON selector may instead use `calendar` with either `calendar_source` or
+`source_id`. Set `all_day` or `timed`, but not both to true. Unknown fields and
+conflicting selectors fail validation before Calendar writes.
+
 All-day event:
 
 ```sh
