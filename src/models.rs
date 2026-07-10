@@ -5,11 +5,25 @@ use serde::Serialize;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JsonOutput {
     Status(StatusReport),
-    Calendars { calendars: Vec<CalendarReport> },
-    DefaultCalendar { calendar: CalendarReport },
-    Events { events: Vec<EventReport> },
-    Event { event: Box<EventReport> },
-    Deleted { deleted: DeletedReport },
+    Calendars {
+        calendars: Vec<CalendarReport>,
+    },
+    DefaultCalendar {
+        calendar: CalendarReport,
+    },
+    Events {
+        events: Vec<EventReport>,
+    },
+    Event {
+        event: Box<EventReport>,
+    },
+    DryRun {
+        would_write: bool,
+        draft: Box<EventDraftReport>,
+    },
+    Deleted {
+        deleted: DeletedReport,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +81,28 @@ pub struct EventReport {
     pub attendees: Vec<ParticipantReport>,
     pub organizer: Option<ParticipantReport>,
     pub alarms: Option<Vec<AlarmReport>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventDraftReport {
+    pub operation: String,
+    pub event_id: Option<String>,
+    pub title: String,
+    pub start: String,
+    pub end: String,
+    pub all_day: bool,
+    pub timed: bool,
+    pub calendar: String,
+    pub calendar_id: String,
+    pub calendar_source: Option<String>,
+    pub calendar_source_id: Option<String>,
+    pub calendar_selection: Option<CalendarSelection>,
+    pub availability: String,
+    pub alarm_count: usize,
+    pub has_notes: bool,
+    pub has_location: bool,
+    pub has_url: bool,
+    pub duplicate_warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -217,5 +253,41 @@ mod tests {
             serde_json::to_value(CalendarSelection::EventkitDefault).unwrap(),
             json!("eventkit_default")
         );
+    }
+
+    #[test]
+    fn dry_run_output_exposes_resolved_write_plan() {
+        let value = serde_json::to_value(JsonOutput::DryRun {
+            would_write: false,
+            draft: Box::new(EventDraftReport {
+                operation: "add".to_string(),
+                event_id: None,
+                title: "Meeting".to_string(),
+                start: "2026-07-10T09:00:00+08:00".to_string(),
+                end: "2026-07-10T10:00:00+08:00".to_string(),
+                all_day: false,
+                timed: true,
+                calendar: "Work".to_string(),
+                calendar_id: "CAL-1".to_string(),
+                calendar_source: Some("iCloud".to_string()),
+                calendar_source_id: Some("SOURCE-1".to_string()),
+                calendar_selection: Some(CalendarSelection::Explicit),
+                availability: "busy".to_string(),
+                alarm_count: 1,
+                has_notes: true,
+                has_location: false,
+                has_url: true,
+                duplicate_warnings: Vec::new(),
+            }),
+        })
+        .unwrap();
+
+        assert_eq!(value["type"], "dry_run");
+        assert_eq!(value["would_write"], false);
+        assert_eq!(value["draft"]["calendar_id"], "CAL-1");
+        assert_eq!(value["draft"]["timed"], true);
+        assert_eq!(value["draft"]["alarm_count"], 1);
+        assert_eq!(value["draft"]["has_notes"], true);
+        assert_eq!(value["draft"]["has_url"], true);
     }
 }

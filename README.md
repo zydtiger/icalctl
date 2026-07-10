@@ -173,6 +173,29 @@ Before relying on the implicit EventKit default, inspect it explicitly:
 icalctl default-calendar --json
 ```
 
+## Dry-Run Write Planning
+
+Add `--dry-run` to `add` or `update` to resolve and validate the complete event
+without changing Calendar:
+
+```sh
+icalctl add "Project sync" \
+  --calendar-id CALENDAR_ID \
+  --start 2026-07-10T09:00 \
+  --end 2026-07-10T09:30 \
+  --alarm-minutes-before 10 \
+  --dry-run \
+  --json
+
+icalctl update EVENT_ID --location "Room 3" --dry-run --json
+```
+
+The JSON response has `type: "dry_run"` and `would_write: false`. Its `draft`
+includes the resolved calendar and source ids, normalized start/end values,
+all-day/timed state, availability, resulting alarm count, notes/location/URL
+presence, and exact duplicate warnings. Dry-run performs the same calendar,
+date-range, URL, availability, and alarm validation as a live write.
+
 ## Row Cache
 
 List-like commands cache their most recent event rows:
@@ -236,6 +259,16 @@ icalctl add "Project sync" \
   --url "https://example.com" \
   --availability busy \
   --alarm-minutes-before 10
+```
+
+Preview the same event before writing:
+
+```sh
+icalctl add "Project sync" \
+  --calendar-id A46E7273-2813-48A6-8F74-67B9E9E3D55D \
+  --start 2026-07-07T09:00 \
+  --end 2026-07-07T09:30 \
+  --dry-run --json
 ```
 
 All-day event:

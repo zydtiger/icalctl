@@ -24,6 +24,7 @@ cargo install --path .
 - For every request to add an event, analyze the best-fit calendar from the user's available calendars and confirm that calendar choice before writing.
 - Prefer exact `--calendar-id` selectors for agent writes and reads. Title-only selectors are acceptable only when the title is unique.
 - Use `icalctl default-calendar --json` before any workflow that intentionally relies on EventKit's implicit default target.
+- Prefer `--dry-run --json` to validate and preview add/update plans before asking for final write confirmation.
 - Quote titles, calendar names, notes, locations, and URLs that contain spaces or shell metacharacters.
 - Use row numbers only immediately after a fresh `today`, `upcoming`, `list`, or `search`; otherwise use the exact EventKit id or rerun the list command.
 
@@ -79,7 +80,21 @@ Use these heuristics:
 - If the title or context names a specific calendar, prefer that calendar, but still confirm before writing.
 - If multiple calendars are plausible, present the top candidates and ask the user to choose.
 
-3. Confirm the complete write with the user before running `icalctl add`.
+3. Preview the complete event without writing:
+
+```sh
+icalctl add "Project sync" \
+  --calendar-id A46E7273-2813-48A6-8F74-67B9E9E3D55D \
+  --start 2026-07-07T09:00 \
+  --end 2026-07-07T09:30 \
+  --alarm-minutes-before 10 \
+  --dry-run \
+  --json
+```
+
+Inspect the resolved calendar, normalized times, availability, alarm count, field-presence flags, and duplicate warnings. A dry run has `would_write: false` and does not replace final user confirmation.
+
+4. Confirm the complete write with the user before running live `icalctl add`.
 
 The confirmation must include:
 
@@ -96,7 +111,7 @@ Example confirmation:
 I would add "Project sync" to the Work calendar on 2026-07-07 from 09:00 to 09:30 local time, with a 10 minute alarm. Confirm?
 ```
 
-4. Only after confirmation, run the add command:
+5. Only after confirmation, run the add command without `--dry-run`:
 
 ```sh
 icalctl add "Project sync" \
@@ -107,7 +122,7 @@ icalctl add "Project sync" \
   --json
 ```
 
-5. Report the created event id, title, time, calendar id, and calendar source.
+6. Report the created event id, title, time, calendar id, and calendar source.
 
 ## Date And Time Input
 
@@ -276,6 +291,7 @@ Options:
 - `--all-day`: mark the event as all-day.
 - `--availability <AVAILABILITY>`: one of `busy`, `free`, `tentative`, or `unavailable`.
 - `--alarm-minutes-before <MINUTES>`: add a display alarm before the event. Can be passed more than once.
+- `--dry-run`: validate and print the resolved event draft without writing.
 - `--json`: print the created event as JSON.
 
 The created event's JSON has `calendar_selection: "explicit"` when a calendar selector was passed and `calendar_selection: "eventkit_default"` when EventKit's default was used.
@@ -317,6 +333,7 @@ Options:
 - `--timed`: mark as timed.
 - `--availability <AVAILABILITY>`: one of `busy`, `free`, `tentative`, or `unavailable`.
 - `--add-alarm-minutes-before <MINUTES>`: add a display alarm before the event. Can be passed more than once.
+- `--dry-run`: validate and print the resulting event draft without writing.
 - `--json`: print the updated event as JSON.
 
 Before updating, confirm the exact event and the intended changes. If moving to a different calendar, inspect calendars and confirm the destination calendar.
@@ -393,6 +410,7 @@ Find an event, inspect it, then update it after user confirmation:
 ```sh
 icalctl search "project sync" --from 2026-07-07 --to 2026-07-14 --json
 icalctl show 1 --json
+icalctl update 1 --location "Room 3" --dry-run --json
 icalctl update 1 --location "Room 3" --json
 ```
 

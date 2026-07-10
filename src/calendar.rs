@@ -2,10 +2,12 @@ use crate::cache::resolve_event_ref;
 use crate::calendar_selector::{CalendarSelector, require_single_calendar, resolve_calendars};
 use crate::cli::{AvailabilityArg, Command, ReadCalendarSelectorArgs, WriteCalendarSelectorArgs};
 use crate::dates::{parse_end_datetime, parse_start_datetime, today_range};
-use crate::eventkit_bridge::{create_event_in_calendar, move_event_to_calendar};
+use crate::eventkit_bridge::{
+    create_event_in_calendar, move_event_to_calendar, validate_event_url,
+};
 use crate::models::{
-    AlarmReport, CalendarReport, CalendarSelection, DeletedReport, EventReport, JsonOutput,
-    StatusReport,
+    AlarmReport, CalendarReport, CalendarSelection, DeletedReport, EventDraftReport, EventReport,
+    JsonOutput, StatusReport,
 };
 use crate::output::event_time_range;
 use anyhow::{Context, Result, bail};
@@ -107,8 +109,9 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             all_day,
             availability,
             alarm_minutes_before,
+            dry_run,
         } => {
-            let event = add_event(AddEventInput {
+            let result = add_event(AddEventInput {
                 title,
                 start,
                 end,
@@ -119,10 +122,9 @@ pub fn run(command: Command) -> Result<JsonOutput> {
                 all_day,
                 availability,
                 alarm_minutes_before,
+                dry_run,
             })?;
-            Ok(JsonOutput::Event {
-                event: Box::new(event),
-            })
+            Ok(write_result_output(result))
         }
         Command::Update {
             id,
@@ -140,8 +142,9 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             timed,
             availability,
             add_alarm_minutes_before,
+            dry_run,
         } => {
-            let event = update_event(UpdateEventInput {
+            let result = update_event(UpdateEventInput {
                 id,
                 title,
                 start,
@@ -157,10 +160,9 @@ pub fn run(command: Command) -> Result<JsonOutput> {
                 timed,
                 availability,
                 add_alarm_minutes_before,
+                dry_run,
             })?;
-            Ok(JsonOutput::Event {
-                event: Box::new(event),
-            })
+            Ok(write_result_output(result))
         }
         Command::Delete { id, force } => {
             let deleted = delete_event(&id, force)?;
@@ -181,6 +183,7 @@ struct AddEventInput {
     all_day: bool,
     availability: Option<AvailabilityArg>,
     alarm_minutes_before: Vec<i64>,
+    dry_run: bool,
 }
 
 struct UpdateEventInput {
@@ -199,18 +202,67 @@ struct UpdateEventInput {
     timed: bool,
     availability: Option<AvailabilityArg>,
     add_alarm_minutes_before: Vec<i64>,
+    dry_run: bool,
 }
 
-fn add_event(input: AddEventInput) -> Result<EventReport> {
+enum WriteEventResult {
+    Written(Box<EventReport>),
+    DryRun(Box<EventDraftReport>),
+}
+
+fn write_result_output(result: WriteEventResult) -> JsonOutput {
+    match result {
+        WriteEventResult::Written(event) => JsonOutput::Event { event },
+        WriteEventResult::DryRun(draft) => JsonOutput::DryRun {
+            would_write: false,
+            draft,
+        },
+    }
+}
+
+fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
     let start = parse_start_datetime(&input.start)
         .with_context(|| format!("invalid --start: {}", input.start))?;
     let end =
         parse_end_datetime(&input.end).with_context(|| format!("invalid --end: {}", input.end))?;
     ensure_valid_event_range(start, end)?;
+    validate_alarm_minutes(&input.alarm_minutes_before)?;
+    if let Some(url) = input.url.as_deref() {
+        validate_event_url(url)?;
+    }
 
     let selection = calendar_selection_for_write(&input.calendar_selector);
     let events = authorized_events_manager()?;
     let target = resolve_target_calendar(&events, &input.calendar_selector, true)?;
+    let availability = input.availability.map(EventAvailability::from);
+    ensure_availability_supported(&target, availability)?;
+
+    if input.dry_run {
+        let duplicate_warnings =
+            duplicate_warnings(&events, &input.title, start, end, &target.identifier, None)?;
+        return Ok(WriteEventResult::DryRun(Box::new(EventDraftReport {
+            operation: "add".to_string(),
+            event_id: None,
+            title: input.title,
+            start: start.to_rfc3339(),
+            end: end.to_rfc3339(),
+            all_day: input.all_day,
+            timed: !input.all_day,
+            calendar: target.title,
+            calendar_id: target.identifier,
+            calendar_source: target.source,
+            calendar_source_id: target.source_id,
+            calendar_selection: Some(selection),
+            availability: availability
+                .map_or("default", availability_name)
+                .to_string(),
+            alarm_count: input.alarm_minutes_before.len(),
+            has_notes: input.notes.is_some(),
+            has_location: input.location.is_some(),
+            has_url: input.url.is_some(),
+            duplicate_warnings,
+        })));
+    }
 
     let draft = EventDraft {
         title: &input.title,
@@ -221,7 +273,7 @@ fn add_event(input: AddEventInput) -> Result<EventReport> {
         calendar_title: None,
         all_day: input.all_day,
         URL: input.url.as_deref(),
-        availability: input.availability.map(EventAvailability::from),
+        availability,
         ..Default::default()
     };
 
@@ -231,10 +283,10 @@ fn add_event(input: AddEventInput) -> Result<EventReport> {
     add_relative_alarms(&events, &id, &input.alarm_minutes_before)?;
     let mut report = event_report_with_alarms(&events, &id)?;
     report.calendar_selection = Some(selection);
-    Ok(report)
+    Ok(WriteEventResult::Written(Box::new(report)))
 }
 
-fn update_event(input: UpdateEventInput) -> Result<EventReport> {
+fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
     let id = resolve_event_ref(&input.id)?;
     let events = authorized_events_manager()?;
     let current = events
@@ -268,6 +320,10 @@ fn update_event(input: UpdateEventInput) -> Result<EventReport> {
     let effective_start = start.unwrap_or(current.start_date);
     let effective_end = end.unwrap_or(current.end_date);
     ensure_valid_event_range(effective_start, effective_end)?;
+    validate_alarm_minutes(&input.add_alarm_minutes_before)?;
+    if let Some(url) = input.url.as_deref() {
+        validate_event_url(url)?;
+    }
 
     let notes = nullable_patch(input.notes.as_deref(), input.clear_notes);
     let location = nullable_patch(input.location.as_deref(), input.clear_location);
@@ -280,6 +336,9 @@ fn update_event(input: UpdateEventInput) -> Result<EventReport> {
         None
     };
     let availability = input.availability.map(EventAvailability::from);
+    let current_calendar = event_calendar(&events, &current)?;
+    let effective_calendar = target.as_ref().unwrap_or(&current_calendar);
+    ensure_availability_supported(effective_calendar, availability)?;
 
     let has_patch = input.title.is_some()
         || start.is_some()
@@ -293,6 +352,45 @@ fn update_event(input: UpdateEventInput) -> Result<EventReport> {
 
     if !has_patch && input.add_alarm_minutes_before.is_empty() {
         bail!("no update fields provided");
+    }
+
+    if input.dry_run {
+        let effective_title = input.title.as_deref().unwrap_or(&current.title);
+        let effective_all_day = all_day.unwrap_or(current.all_day);
+        let effective_availability = availability.unwrap_or(current.availability);
+        let existing_alarm_count = events
+            .get_event_alarms(&id)
+            .with_context(|| format!("failed to read alarms for event {id}"))?
+            .len();
+        let duplicate_warnings = duplicate_warnings(
+            &events,
+            effective_title,
+            effective_start,
+            effective_end,
+            &effective_calendar.identifier,
+            Some(&id),
+        )?;
+
+        return Ok(WriteEventResult::DryRun(Box::new(EventDraftReport {
+            operation: "update".to_string(),
+            event_id: Some(id),
+            title: effective_title.to_string(),
+            start: effective_start.to_rfc3339(),
+            end: effective_end.to_rfc3339(),
+            all_day: effective_all_day,
+            timed: !effective_all_day,
+            calendar: effective_calendar.title.clone(),
+            calendar_id: effective_calendar.identifier.clone(),
+            calendar_source: effective_calendar.source.clone(),
+            calendar_source_id: effective_calendar.source_id.clone(),
+            calendar_selection: target.as_ref().map(|_| CalendarSelection::Explicit),
+            availability: availability_name(effective_availability).to_string(),
+            alarm_count: existing_alarm_count + input.add_alarm_minutes_before.len(),
+            has_notes: patched_field_present(current.notes.as_deref(), notes),
+            has_location: patched_field_present(current.location.as_deref(), location),
+            has_url: patched_field_present(current.URL.as_deref(), url),
+            duplicate_warnings,
+        })));
     }
 
     let has_event_patch = input.title.is_some()
@@ -331,7 +429,9 @@ fn update_event(input: UpdateEventInput) -> Result<EventReport> {
     };
 
     add_relative_alarms(&events, &id, &input.add_alarm_minutes_before)?;
-    event_report_with_alarms(&events, &id)
+    Ok(WriteEventResult::Written(Box::new(
+        event_report_with_alarms(&events, &id)?,
+    )))
 }
 
 fn delete_event(reference: &str, force: bool) -> Result<DeletedReport> {
@@ -457,6 +557,106 @@ fn calendar_reports(calendars: &[CalendarInfo], default_id: Option<&str>) -> Vec
         .collect()
 }
 
+fn event_calendar(events: &EventsManager, event: &EventItem) -> Result<CalendarInfo> {
+    let calendars = list_calendars(events)?;
+    event
+        .calendar_id
+        .as_deref()
+        .and_then(|id| calendars.iter().find(|calendar| calendar.identifier == id))
+        .or_else(|| {
+            event
+                .calendar_title
+                .as_deref()
+                .and_then(|title| calendars.iter().find(|calendar| calendar.title == title))
+        })
+        .cloned()
+        .context("event calendar is no longer available")
+}
+
+fn ensure_availability_supported(
+    calendar: &CalendarInfo,
+    availability: Option<EventAvailability>,
+) -> Result<()> {
+    let Some(availability) = availability else {
+        return Ok(());
+    };
+    let availability = availability_name(availability);
+    if !calendar
+        .supported_event_availabilities
+        .iter()
+        .any(|supported| supported.eq_ignore_ascii_case(availability))
+    {
+        bail!(
+            "calendar {:?} does not support availability {:?}; supported values: {}",
+            calendar.title,
+            availability,
+            if calendar.supported_event_availabilities.is_empty() {
+                "none".to_string()
+            } else {
+                calendar.supported_event_availabilities.join(", ")
+            }
+        );
+    }
+    Ok(())
+}
+
+fn availability_name(availability: EventAvailability) -> &'static str {
+    match availability {
+        EventAvailability::NotSupported => "not_supported",
+        EventAvailability::Busy => "busy",
+        EventAvailability::Free => "free",
+        EventAvailability::Tentative => "tentative",
+        EventAvailability::Unavailable => "unavailable",
+    }
+}
+
+fn validate_alarm_minutes(minutes_before: &[i64]) -> Result<()> {
+    if let Some(minutes) = minutes_before.iter().find(|minutes| **minutes < 0) {
+        bail!("alarm minutes before must be zero or greater: {minutes}");
+    }
+    Ok(())
+}
+
+fn patched_field_present(current: Option<&str>, patch: Option<Option<&str>>) -> bool {
+    match patch {
+        Some(value) => value.is_some(),
+        None => current.is_some(),
+    }
+}
+
+fn duplicate_warnings(
+    events: &EventsManager,
+    title: &str,
+    start: DateTime<Local>,
+    end: DateTime<Local>,
+    calendar_id: &str,
+    excluded_event_id: Option<&str>,
+) -> Result<Vec<String>> {
+    let candidates = events
+        .fetch_events(
+            start - chrono::Duration::seconds(1),
+            end + chrono::Duration::seconds(1),
+            None,
+        )
+        .context("failed to check for duplicate events")?;
+
+    Ok(candidates
+        .into_iter()
+        .filter(|event| excluded_event_id != Some(event.identifier.as_str()))
+        .filter(|event| event.title == title)
+        .filter(|event| event.start_date == start && event.end_date == end)
+        .filter(|event| event.calendar_id.as_deref() == Some(calendar_id))
+        .map(|event| {
+            format!(
+                "possible duplicate: {:?} at {} [{}]",
+                event.title,
+                event.start_date.to_rfc3339(),
+                event.identifier
+            )
+        })
+        .collect())
+}
+
 fn ensure_event_calendar_writable(
     events: &EventsManager,
     event: &EventItem,
@@ -490,11 +690,8 @@ fn ensure_event_calendar_writable(
 }
 
 fn add_relative_alarms(events: &EventsManager, id: &str, minutes_before: &[i64]) -> Result<()> {
+    validate_alarm_minutes(minutes_before)?;
     for minutes in minutes_before {
-        if *minutes < 0 {
-            bail!("alarm minutes before must be zero or greater: {minutes}");
-        }
-
         let alarm = AlarmInfo {
             relative_offset: Some(-(*minutes as f64) * 60.0),
             proximity: AlarmProximity::None,
@@ -726,6 +923,49 @@ mod tests {
             calendar_selection_for_write(&explicit),
             CalendarSelection::Explicit
         );
+    }
+
+    #[test]
+    fn alarm_validation_rejects_negative_values_before_writes() {
+        assert!(validate_alarm_minutes(&[0, 10]).is_ok());
+        assert_eq!(
+            validate_alarm_minutes(&[-1]).unwrap_err().to_string(),
+            "alarm minutes before must be zero or greater: -1"
+        );
+    }
+
+    #[test]
+    fn url_validation_runs_without_writing() {
+        assert!(validate_event_url("https://example.com/event").is_ok());
+        assert!(validate_event_url("https://exa mple.com/event").is_err());
+    }
+
+    #[test]
+    fn event_range_validation_rejects_non_positive_duration() {
+        let start = parse_start_datetime("2026-07-10T10:00").unwrap();
+        let same = parse_end_datetime("2026-07-10T10:00").unwrap();
+        let earlier = parse_end_datetime("2026-07-10T09:00").unwrap();
+
+        assert!(ensure_valid_event_range(start, same).is_err());
+        assert!(ensure_valid_event_range(start, earlier).is_err());
+    }
+
+    #[test]
+    fn availability_validation_uses_calendar_capabilities() {
+        let mut calendar = calendar("A", "Work");
+        calendar.supported_event_availabilities = vec!["busy".to_string(), "free".to_string()];
+
+        assert!(ensure_availability_supported(&calendar, Some(EventAvailability::Free)).is_ok());
+        assert!(
+            ensure_availability_supported(&calendar, Some(EventAvailability::Tentative)).is_err()
+        );
+    }
+
+    #[test]
+    fn nullable_patch_presence_matches_resulting_field() {
+        assert!(patched_field_present(Some("old"), None));
+        assert!(patched_field_present(None, Some(Some("new"))));
+        assert!(!patched_field_present(Some("old"), Some(None)));
     }
 
     fn calendar(id: &str, title: &str) -> CalendarInfo {

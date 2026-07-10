@@ -1,4 +1,4 @@
-use crate::models::{AlarmReport, CalendarReport, EventReport, JsonOutput};
+use crate::models::{AlarmReport, CalendarReport, EventDraftReport, EventReport, JsonOutput};
 
 pub fn print_human_output(output: &JsonOutput) {
     match output {
@@ -17,9 +17,38 @@ pub fn print_human_output(output: &JsonOutput) {
         }
         JsonOutput::Events { events } => print_events(events),
         JsonOutput::Event { event } => print_event_detail(event),
+        JsonOutput::DryRun { draft, .. } => print_dry_run(draft),
         JsonOutput::Deleted { deleted } => {
             println!("Deleted event: {} [{}]", deleted.title, deleted.id);
         }
+    }
+}
+
+fn print_dry_run(draft: &EventDraftReport) {
+    println!("Dry run: no Calendar changes were made");
+    println!("operation: {}", draft.operation);
+    if let Some(event_id) = &draft.event_id {
+        println!("event id: {event_id}");
+    }
+    println!("title: {}", draft.title);
+    println!("time: {} to {}", draft.start, draft.end);
+    println!("kind: {}", if draft.all_day { "all-day" } else { "timed" });
+    println!("calendar: {} [{}]", draft.calendar, draft.calendar_id);
+    if let Some(source) = &draft.calendar_source {
+        if let Some(source_id) = &draft.calendar_source_id {
+            println!("calendar source: {source} [{source_id}]");
+        } else {
+            println!("calendar source: {source}");
+        }
+    }
+    println!("availability: {}", draft.availability);
+    println!("alarms: {}", draft.alarm_count);
+    println!(
+        "fields: notes={} location={} url={}",
+        draft.has_notes, draft.has_location, draft.has_url
+    );
+    for warning in &draft.duplicate_warnings {
+        println!("warning: {warning}");
     }
 }
 

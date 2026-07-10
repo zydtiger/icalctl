@@ -42,6 +42,8 @@ Acceptance checks:
 
 ## 3. Add dry-run planning for writes
 
+**Status: Resolved.** Added non-mutating add/update plans with shared permission, calendar, date-range, URL, availability, and alarm validation plus exact duplicate warnings.
+
 Problem: live writes are high-risk, especially when date parsing, default calendar selection, or duplicate calendar titles are involved.
 
 Proposed changes:

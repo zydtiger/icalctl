@@ -41,7 +41,7 @@ pub struct ReadCalendarSelectorArgs {
 
 #[derive(Debug, Args)]
 pub struct WriteCalendarSelectorArgs {
-    /// Calendar title. Defaults to the system default calendar for new events.
+    /// Calendar title. Add defaults to EventKit's default; update keeps the current calendar.
     #[arg(short, long)]
     pub calendar: Option<String>,
 
@@ -168,6 +168,10 @@ pub enum Command {
         /// Add a display alarm N minutes before the event. Can be passed more than once.
         #[arg(long = "alarm-minutes-before", value_name = "MINUTES")]
         alarm_minutes_before: Vec<i64>,
+
+        /// Validate and print the resolved event draft without writing to Calendar.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Update a calendar event by exact EventKit identifier or cached row number.
@@ -229,6 +233,10 @@ pub enum Command {
         /// Add a display alarm N minutes before the event. Can be passed more than once.
         #[arg(long = "add-alarm-minutes-before", value_name = "MINUTES")]
         add_alarm_minutes_before: Vec<i64>,
+
+        /// Validate and print the resulting event draft without writing to Calendar.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Delete a calendar event by exact EventKit identifier or cached row number.
@@ -297,5 +305,30 @@ mod tests {
         ]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn add_and_update_accept_dry_run() {
+        let add = Cli::try_parse_from([
+            "icalctl",
+            "add",
+            "Meeting",
+            "--start",
+            "2026-07-10T09:00",
+            "--end",
+            "2026-07-10T10:00",
+            "--dry-run",
+        ]);
+        let update = Cli::try_parse_from([
+            "icalctl",
+            "update",
+            "EVENT-ID",
+            "--title",
+            "Meeting",
+            "--dry-run",
+        ]);
+
+        assert!(add.is_ok());
+        assert!(update.is_ok());
     }
 }

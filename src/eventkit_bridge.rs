@@ -78,9 +78,16 @@ pub fn move_event_to_calendar(event_id: &str, calendar_id: &str) -> Result<Strin
 }
 
 fn set_url(item: &EKCalendarItem, value: &str) -> Result<()> {
-    let value = NSString::from_str(value);
-    let url = NSURL::URLWithString_encodingInvalidCharacters(&value, false)
+    let ns_value = NSString::from_str(value);
+    let url = NSURL::URLWithString_encodingInvalidCharacters(&ns_value, false)
         .ok_or_else(|| anyhow!("invalid URL: {value}"))?;
     unsafe { item.setURL(Some(&url)) };
     Ok(())
+}
+
+pub fn validate_event_url(value: &str) -> Result<()> {
+    let ns_value = NSString::from_str(value);
+    NSURL::URLWithString_encodingInvalidCharacters(&ns_value, false)
+        .map(|_| ())
+        .ok_or_else(|| anyhow!("invalid URL: {value}"))
 }
