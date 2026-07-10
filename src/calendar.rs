@@ -1,6 +1,8 @@
 use crate::cache::resolve_event_ref;
 use crate::calendar_selector::{CalendarSelector, require_single_calendar, resolve_calendars};
-use crate::cli::{AvailabilityArg, Command, ReadCalendarSelectorArgs, WriteCalendarSelectorArgs};
+use crate::cli::{
+    AvailabilityArg, BatchCommand, Command, ReadCalendarSelectorArgs, WriteCalendarSelectorArgs,
+};
 use crate::dates::{
     datetime_in_time_zone, parse_end_datetime, parse_end_datetime_in_time_zone,
     parse_start_datetime, parse_start_datetime_in_time_zone, today_range, utc_datetime,
@@ -175,6 +177,16 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             })?;
             Ok(write_result_output(result))
         }
+        Command::Batch { command } => match command {
+            BatchCommand::Add {
+                file,
+                if_exists,
+                dry_run,
+                continue_on_error,
+            } => Ok(JsonOutput::Batch {
+                batch: crate::batch::run_batch_add(&file, if_exists, dry_run, continue_on_error)?,
+            }),
+        },
         Command::Delete { id, force } => {
             let deleted = delete_event(&id, force)?;
             Ok(JsonOutput::Deleted { deleted })
@@ -532,7 +544,7 @@ fn delete_event(reference: &str, force: bool) -> Result<DeletedReport> {
     })
 }
 
-fn authorized_events_manager() -> Result<EventsManager> {
+pub(crate) fn authorized_events_manager() -> Result<EventsManager> {
     match EventsManager::authorization_status() {
         AuthorizationStatus::FullAccess => Ok(EventsManager::new()),
         AuthorizationStatus::NotDetermined => {
@@ -560,7 +572,7 @@ fn authorized_events_manager() -> Result<EventsManager> {
     }
 }
 
-fn ensure_valid_event_range(start: DateTime<Local>, end: DateTime<Local>) -> Result<()> {
+pub(crate) fn ensure_valid_event_range(start: DateTime<Local>, end: DateTime<Local>) -> Result<()> {
     if start >= end {
         bail!("event start must be before event end");
     }
@@ -571,7 +583,7 @@ fn nullable_patch(value: Option<&str>, clear: bool) -> Option<Option<&str>> {
     if clear { Some(None) } else { value.map(Some) }
 }
 
-fn resolve_target_calendar(
+pub(crate) fn resolve_target_calendar(
     events: &EventsManager,
     args: &WriteCalendarSelectorArgs,
     allow_default: bool,
@@ -649,7 +661,7 @@ fn event_calendar(events: &EventsManager, event: &EventItem) -> Result<CalendarI
         .context("event calendar is no longer available")
 }
 
-fn ensure_availability_supported(
+pub(crate) fn ensure_availability_supported(
     calendar: &CalendarInfo,
     availability: Option<EventAvailability>,
 ) -> Result<()> {
@@ -676,7 +688,7 @@ fn ensure_availability_supported(
     Ok(())
 }
 
-fn availability_name(availability: EventAvailability) -> &'static str {
+pub(crate) fn availability_name(availability: EventAvailability) -> &'static str {
     match availability {
         EventAvailability::NotSupported => "not_supported",
         EventAvailability::Busy => "busy",
@@ -686,7 +698,7 @@ fn availability_name(availability: EventAvailability) -> &'static str {
     }
 }
 
-fn validate_alarm_minutes(minutes_before: &[i64]) -> Result<()> {
+pub(crate) fn validate_alarm_minutes(minutes_before: &[i64]) -> Result<()> {
     if let Some(minutes) = minutes_before.iter().find(|minutes| **minutes < 0) {
         bail!("alarm minutes before must be zero or greater: {minutes}");
     }
@@ -765,7 +777,11 @@ fn ensure_event_calendar_writable(
     Ok(())
 }
 
-fn add_relative_alarms(events: &EventsManager, id: &str, minutes_before: &[i64]) -> Result<()> {
+pub(crate) fn add_relative_alarms(
+    events: &EventsManager,
+    id: &str,
+    minutes_before: &[i64],
+) -> Result<()> {
     validate_alarm_minutes(minutes_before)?;
     for minutes in minutes_before {
         let alarm = AlarmInfo {

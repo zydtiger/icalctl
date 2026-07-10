@@ -78,6 +78,8 @@ Acceptance checks:
 
 ## 5. Add idempotent batch creation
 
+**Status: Resolved.** Added versioned JSON batch imports with full preflight, dry-run plans, exact duplicate policies, patch-style updates, alarm replacement, per-item results, and explicit partial-failure handling.
+
 Problem: adding six related flight events required repeated writes or an external script. There is no built-in way to create a batch safely, preview it, and skip duplicates.
 
 Proposed changes:

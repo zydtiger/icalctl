@@ -1,6 +1,7 @@
 #[cfg(target_os = "macos")]
 embed_plist::embed_info_plist!("../Info.plist");
 
+mod batch;
 mod cache;
 mod calendar;
 mod calendar_selector;
@@ -13,13 +14,14 @@ mod output;
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{Cli, Command};
+use std::process::ExitCode;
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     let Cli { json, command } = Cli::parse();
 
     if let Command::Completions { shell } = command {
         cli::print_completions(shell);
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     let output = calendar::run(command)?;
@@ -34,5 +36,9 @@ fn main() -> Result<()> {
         output::print_human_output(&output);
     }
 
-    Ok(())
+    if output.has_failures() {
+        return Ok(ExitCode::FAILURE);
+    }
+
+    Ok(ExitCode::SUCCESS)
 }

@@ -19,12 +19,12 @@ cargo install --path .
 
 - Prefer `icalctl <command> --json` whenever output must be parsed by an agent or script.
 - Use human-friendly output when answering a person directly and JSON when making decisions from command output.
-- Treat `add`, `update`, and `delete` as live writes to the user's Calendar.app data.
+- Treat `add`, live `batch add`, `update`, and `delete` as live writes to the user's Calendar.app data.
 - Do not create, update, move, or delete an event until the user has explicitly confirmed the final action.
 - For every request to add an event, analyze the best-fit calendar from the user's available calendars and confirm that calendar choice before writing.
 - Prefer exact `--calendar-id` selectors for agent writes and reads. Title-only selectors are acceptable only when the title is unique.
 - Use `icalctl default-calendar --json` before any workflow that intentionally relies on EventKit's implicit default target.
-- Prefer `--dry-run --json` to validate and preview add/update plans before asking for final write confirmation.
+- Prefer `--dry-run --json` to validate and preview add, batch add, and update plans before asking for final write confirmation.
 - For timezone-less event inputs, `--time-zone <TZID>` controls parsing and stores the same single EventKit timezone. For offset-bearing or travel times, explicit offsets remain authoritative; verify input echoes, UTC fields, and `duration_seconds`.
 - Quote titles, calendar names, notes, locations, and URLs that contain spaces or shell metacharacters.
 - Use row numbers only immediately after a fresh `today`, `upcoming`, `list`, or `search`; otherwise use the exact EventKit id or rerun the list command.
@@ -306,6 +306,28 @@ Options:
 The created event's JSON has `calendar_selection: "explicit"` when a calendar selector was passed and `calendar_selection: "eventkit_default"` when EventKit's default was used.
 
 Never run `add` until the calendar choice and final event details have been confirmed by the user.
+
+### `batch add`
+
+Validate and import a versioned JSON event batch:
+
+```sh
+icalctl batch add --file events.json --if-exists skip --dry-run --json
+icalctl batch add --file events.json --if-exists skip --json
+```
+
+The file contains `version: 1`, optional `defaults`, and an `events` array.
+Every event requires `title`, `start`, and `end`; prefer exact `calendar_id`
+values in defaults or individual entries. Datetime and timezone behavior is the
+same as `add`.
+
+Always inspect the complete dry-run result and obtain confirmation for every
+planned create or update before running the live command. `--if-exists error`
+is the default. Use `skip` for idempotent reruns. Use `update` only when the
+user has confirmed the optional-field patches; supplied alarm arrays replace
+existing alarms. By default any preflight error blocks all writes.
+`--continue-on-error` permits partial imports and must be disclosed before
+confirmation because EventKit cannot roll back earlier successful writes.
 
 ### `update`
 

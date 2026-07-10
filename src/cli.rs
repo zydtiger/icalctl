@@ -1,6 +1,8 @@
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
+use serde::{Deserialize, Serialize};
 use std::io;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -255,6 +257,12 @@ pub enum Command {
         dry_run: bool,
     },
 
+    /// Safely create or reconcile multiple events from a JSON file.
+    Batch {
+        #[command(subcommand)]
+        command: BatchCommand,
+    },
+
     /// Delete a calendar event by exact EventKit identifier or cached row number.
     Delete {
         /// EventKit event identifier, or row number from the last event list.
@@ -272,12 +280,44 @@ pub enum Command {
     },
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Debug, Subcommand)]
+pub enum BatchCommand {
+    /// Create events from a versioned JSON batch file.
+    Add {
+        /// Path to the JSON batch file.
+        #[arg(long)]
+        file: PathBuf,
+
+        /// Behavior when an exact matching event already exists.
+        #[arg(long = "if-exists", value_enum, default_value_t = IfExistsArg::Error)]
+        if_exists: IfExistsArg,
+
+        /// Validate and report every planned action without writing to Calendar.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Process valid items and continue after individual failures.
+        #[arg(long)]
+        continue_on_error: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
 pub enum AvailabilityArg {
     Busy,
     Free,
     Tentative,
     Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum IfExistsArg {
+    Skip,
+    Update,
+    #[default]
+    Error,
 }
 
 pub fn print_completions(shell: Shell) {
@@ -379,5 +419,33 @@ mod tests {
         ]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn batch_add_parses_safety_flags() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "batch",
+            "add",
+            "--file",
+            "events.json",
+            "--if-exists",
+            "skip",
+            "--dry-run",
+            "--continue-on-error",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Batch {
+                command: BatchCommand::Add {
+                    if_exists: IfExistsArg::Skip,
+                    dry_run: true,
+                    continue_on_error: true,
+                    ..
+                }
+            }
+        ));
     }
 }

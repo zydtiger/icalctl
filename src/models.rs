@@ -22,9 +22,18 @@ pub enum JsonOutput {
         would_write: bool,
         draft: Box<EventDraftReport>,
     },
+    Batch {
+        batch: BatchReport,
+    },
     Deleted {
         deleted: DeletedReport,
     },
+}
+
+impl JsonOutput {
+    pub fn has_failures(&self) -> bool {
+        matches!(self, Self::Batch { batch } if batch.summary.failed > 0 || batch.summary.not_attempted > 0)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -146,6 +155,45 @@ pub struct AlarmReport {
 pub struct DeletedReport {
     pub id: String,
     pub title: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchReport {
+    pub dry_run: bool,
+    pub can_write: bool,
+    pub if_exists: String,
+    pub continue_on_error: bool,
+    pub summary: BatchSummaryReport,
+    pub items: Vec<BatchItemReport>,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct BatchSummaryReport {
+    pub total: usize,
+    pub created: usize,
+    pub skipped: usize,
+    pub updated: usize,
+    pub failed: usize,
+    pub not_attempted: usize,
+    pub would_create: usize,
+    pub would_skip: usize,
+    pub would_update: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchItemReport {
+    pub index: usize,
+    pub client_id: Option<String>,
+    pub status: String,
+    pub event_id: Option<String>,
+    pub matched_event_id: Option<String>,
+    pub draft: Option<Box<EventDraftReport>>,
+    pub error: Option<BatchErrorReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchErrorReport {
+    pub message: String,
 }
 
 impl From<&CalendarInfo> for CalendarReport {
@@ -385,5 +433,43 @@ mod tests {
             report.end_in_event_time_zone.as_deref(),
             Some("2026-07-12T15:55:00+02:00")
         );
+    }
+
+    #[test]
+    fn batch_output_has_per_item_status_id_and_error_shape() {
+        let output = JsonOutput::Batch {
+            batch: BatchReport {
+                dry_run: true,
+                can_write: false,
+                if_exists: "error".to_string(),
+                continue_on_error: false,
+                summary: BatchSummaryReport {
+                    total: 1,
+                    failed: 1,
+                    ..Default::default()
+                },
+                items: vec![BatchItemReport {
+                    index: 0,
+                    client_id: Some("flight-1".to_string()),
+                    status: "failed".to_string(),
+                    event_id: Some("EVENT-1".to_string()),
+                    matched_event_id: Some("EVENT-1".to_string()),
+                    draft: None,
+                    error: Some(BatchErrorReport {
+                        message: "matching event already exists".to_string(),
+                    }),
+                }],
+            },
+        };
+        let value = serde_json::to_value(&output).unwrap();
+
+        assert_eq!(value["type"], "batch");
+        assert_eq!(value["batch"]["items"][0]["status"], "failed");
+        assert_eq!(value["batch"]["items"][0]["event_id"], "EVENT-1");
+        assert_eq!(
+            value["batch"]["items"][0]["error"]["message"],
+            "matching event already exists"
+        );
+        assert!(output.has_failures());
     }
 }

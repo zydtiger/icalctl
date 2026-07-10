@@ -15,6 +15,7 @@ This is an early Apple Silicon macOS CLI. It currently supports:
 - listing calendars
 - listing, showing, and searching events
 - creating, updating, and deleting events
+- validating and importing idempotent JSON event batches
 - compact JSON output
 - cached row-number references for the most recent event list
 - shell completion generation
@@ -97,6 +98,7 @@ icalctl list --from 2026-07-07 --to 2026-07-07
 icalctl search meeting --from 2026-07-07 --to 2026-07-14
 icalctl show <event-id-or-row>
 icalctl add "Meeting" --start 2026-07-07T09:00 --end 2026-07-07T09:30
+icalctl batch add --file events.json --if-exists skip --dry-run
 icalctl update <event-id-or-row> --location "Library"
 icalctl delete <event-id-or-row>
 ```
@@ -105,6 +107,7 @@ Use command-specific help for the full option set:
 
 ```sh
 icalctl add --help
+icalctl batch add --help
 icalctl update --help
 icalctl delete --help
 ```
@@ -249,6 +252,59 @@ includes the resolved calendar and source ids, normalized start/end values,
 all-day/timed state, availability, resulting alarm count, notes/location/URL
 presence, and exact duplicate warnings. Dry-run performs the same calendar,
 date-range, URL, availability, and alarm validation as a live write.
+
+## Batch Event Imports
+
+Use `batch add` to validate and import multiple events from one versioned JSON
+file. Preview the complete batch before running the live command:
+
+```sh
+icalctl batch add --file events.json --if-exists skip --dry-run --json
+icalctl batch add --file events.json --if-exists skip --json
+```
+
+The file uses a top-level object with optional shared defaults:
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "calendar_id": "CALENDAR_ID",
+    "time_zone": "Europe/Berlin",
+    "availability": "busy",
+    "alarm_minutes_before": [10]
+  },
+  "events": [
+    {
+      "client_id": "flight-outbound",
+      "title": "Flight to Berlin",
+      "start": "2026-07-12T15:55",
+      "end": "2026-07-12T18:10",
+      "location": "PVG"
+    }
+  ]
+}
+```
+
+Each event requires `title`, `start`, and `end`. Events may override the shared
+calendar selector, timezone, availability, all-day state, and alarms. Calendar
+selectors use the same `calendar`, `calendar_id`, `calendar_source`, and
+`source_id` fields as the CLI. `client_id` is returned for correlation but is
+not stored in EventKit.
+
+Existing events are matched exactly by resolved calendar id, title, normalized
+start and end instants, and all-day state. `--if-exists` defaults to `error`;
+choose `skip` for idempotent reruns or `update` to patch optional fields on the
+matching event. With `update`, omitted fields remain unchanged, explicit `null`
+clears `notes`, `location`, `url`, or `time_zone`, and a supplied
+`alarm_minutes_before` array replaces all existing alarms.
+
+By default, any preflight error blocks every write. `--continue-on-error`
+processes valid items and continues after individual write failures. EventKit
+does not provide a multi-event transaction, so a runtime failure cannot roll
+back events that were already written. Batch JSON reports every item as
+created, skipped, updated, failed, not attempted, or the corresponding
+`would_*` dry-run status, and exits nonzero if any item failed.
 
 ## Row Cache
 
