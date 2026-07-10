@@ -1,7 +1,8 @@
 use crate::cache::resolve_event_ref;
 use crate::calendar_selector::{CalendarSelector, require_single_calendar, resolve_calendars};
 use crate::cli::{
-    AvailabilityArg, BatchCommand, Command, ReadCalendarSelectorArgs, WriteCalendarSelectorArgs,
+    AvailabilityArg, BatchCommand, Command, IfExistsArg, ReadCalendarSelectorArgs,
+    WriteCalendarSelectorArgs,
 };
 use crate::dates::{
     datetime_in_time_zone, parse_end_datetime, parse_end_datetime_in_time_zone,
@@ -120,6 +121,8 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             availability,
             time_zone,
             alarm_minutes_before,
+            if_exists,
+            duplicate_window_seconds,
             dry_run,
         } => {
             let result = add_event(AddEventInput {
@@ -134,6 +137,8 @@ pub fn run(command: Command) -> Result<JsonOutput> {
                 availability,
                 time_zone,
                 alarm_minutes_before,
+                if_exists,
+                duplicate_window_seconds,
                 dry_run,
             })?;
             Ok(write_result_output(result))
@@ -210,6 +215,8 @@ struct AddEventInput {
     availability: Option<AvailabilityArg>,
     time_zone: Option<String>,
     alarm_minutes_before: Vec<i64>,
+    if_exists: IfExistsArg,
+    duplicate_window_seconds: i64,
     dry_run: bool,
 }
 
@@ -250,6 +257,9 @@ fn write_result_output(result: WriteEventResult) -> JsonOutput {
 }
 
 fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
+    if input.duplicate_window_seconds < 0 {
+        bail!("--duplicate-window-seconds must be zero or greater");
+    }
     if let Some(time_zone) = input.time_zone.as_deref() {
         validate_time_zone(time_zone)?;
         validate_event_time_zone(time_zone)?;
@@ -270,9 +280,30 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
     let availability = input.availability.map(EventAvailability::from);
     ensure_availability_supported(&target, availability)?;
 
+    let duplicates = matching_events(
+        &events,
+        &DuplicateQuery {
+            title: &input.title,
+            start,
+            end,
+            all_day: input.all_day,
+            calendar_id: &target.identifier,
+            excluded_event_id: None,
+            window_seconds: input.duplicate_window_seconds,
+        },
+    )?;
+
     if input.dry_run {
-        let duplicate_warnings =
-            duplicate_warnings(&events, &input.title, start, end, &target.identifier, None)?;
+        let duplicate_warnings = duplicate_warnings(&duplicates, input.duplicate_window_seconds);
+        let operation = match duplicates.len() {
+            0 => "add",
+            1 => match input.if_exists {
+                IfExistsArg::Skip => "skip_existing",
+                IfExistsArg::Update => "update_existing",
+                IfExistsArg::Error => "error_existing",
+            },
+            _ => "error_ambiguous_duplicates",
+        };
         let start_in_event_time_zone = input
             .time_zone
             .as_deref()
@@ -284,8 +315,10 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
             .map(|time_zone| datetime_in_time_zone(end, time_zone))
             .transpose()?;
         return Ok(WriteEventResult::DryRun(Box::new(EventDraftReport {
-            operation: "add".to_string(),
-            event_id: None,
+            operation: operation.to_string(),
+            event_id: duplicates
+                .first()
+                .map(|event| event.identifier.clone()),
             title: input.title,
             start: start.to_rfc3339(),
             end: end.to_rfc3339(),
@@ -317,6 +350,41 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
         })));
     }
 
+    if duplicates.len() > 1 {
+        let ids = duplicates
+            .iter()
+            .map(|event| event.identifier.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!(
+            "{} matching events found; refusing to choose between ids: {ids}",
+            duplicates.len()
+        );
+    }
+    if let Some(existing) = duplicates.into_iter().next() {
+        return match input.if_exists {
+            IfExistsArg::Error => bail!(
+                "matching event already exists [{}]; pass --if-exists skip or --if-exists update",
+                existing.identifier
+            ),
+            IfExistsArg::Skip => {
+                let mut report = event_report_with_alarms(&events, &existing.identifier)?;
+                report.calendar_selection = Some(selection);
+                report.write_action = Some("skipped".to_string());
+                report.start_input = Some(input.start);
+                report.end_input = Some(input.end);
+                Ok(WriteEventResult::Written(Box::new(report)))
+            }
+            IfExistsArg::Update => update_existing_from_add(
+                &events,
+                &existing.identifier,
+                &input,
+                selection,
+                availability,
+            ),
+        };
+    }
+
     let draft = EventDraft {
         title: &input.title,
         start: Some(start),
@@ -336,8 +404,50 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
     add_relative_alarms(&events, &id, &input.alarm_minutes_before)?;
     let mut report = event_report_with_alarms(&events, &id)?;
     report.calendar_selection = Some(selection);
+    report.write_action = Some("created".to_string());
     report.start_input = Some(input.start);
     report.end_input = Some(input.end);
+    Ok(WriteEventResult::Written(Box::new(report)))
+}
+
+fn update_existing_from_add(
+    events: &EventsManager,
+    event_id: &str,
+    input: &AddEventInput,
+    selection: CalendarSelection,
+    availability: Option<EventAvailability>,
+) -> Result<WriteEventResult> {
+    let notes = input.notes.as_deref().map(Some);
+    let location = input.location.as_deref().map(Some);
+    let url = input.url.as_deref().map(Some);
+    if notes.is_some() || location.is_some() || url.is_some() || availability.is_some() {
+        let patch = EventPatch {
+            notes,
+            location,
+            URL: url,
+            availability,
+            ..Default::default()
+        };
+        events
+            .update_event(event_id, &patch)
+            .with_context(|| format!("failed to update matching event {event_id}"))?;
+    }
+
+    let event_id = if let Some(time_zone) = input.time_zone.as_deref() {
+        update_event_calendar_metadata(event_id, None, Some(Some(time_zone)))
+            .with_context(|| format!("failed to update timezone for matching event {event_id}"))?
+    } else {
+        event_id.to_string()
+    };
+    if !input.alarm_minutes_before.is_empty() {
+        replace_relative_alarms(events, &event_id, &input.alarm_minutes_before)?;
+    }
+
+    let mut report = event_report_with_alarms(events, &event_id)?;
+    report.calendar_selection = Some(selection);
+    report.write_action = Some("updated".to_string());
+    report.start_input = Some(input.start.clone());
+    report.end_input = Some(input.end.clone());
     Ok(WriteEventResult::Written(Box::new(report)))
 }
 
@@ -432,14 +542,19 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
             .get_event_alarms(&id)
             .with_context(|| format!("failed to read alarms for event {id}"))?
             .len();
-        let duplicate_warnings = duplicate_warnings(
+        let duplicates = matching_events(
             &events,
-            effective_title,
-            effective_start,
-            effective_end,
-            &effective_calendar.identifier,
-            Some(&id),
+            &DuplicateQuery {
+                title: effective_title,
+                start: effective_start,
+                end: effective_end,
+                all_day: effective_all_day,
+                calendar_id: &effective_calendar.identifier,
+                excluded_event_id: Some(&id),
+                window_seconds: 0,
+            },
         )?;
+        let duplicate_warnings = duplicate_warnings(&duplicates, 0);
         let start_in_event_time_zone = effective_time_zone
             .map(|time_zone| datetime_in_time_zone(effective_start, time_zone))
             .transpose()?;
@@ -520,6 +635,7 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
 
     add_relative_alarms(&events, &id, &input.add_alarm_minutes_before)?;
     let mut report = event_report_with_alarms(&events, &id)?;
+    report.write_action = Some("updated".to_string());
     report.start_input = input.start;
     report.end_input = input.end;
     Ok(WriteEventResult::Written(Box::new(report)))
@@ -730,37 +846,60 @@ fn patched_field_present(current: Option<&str>, patch: Option<Option<&str>>) -> 
     }
 }
 
-fn duplicate_warnings(
-    events: &EventsManager,
-    title: &str,
+struct DuplicateQuery<'a> {
+    title: &'a str,
     start: DateTime<Local>,
     end: DateTime<Local>,
-    calendar_id: &str,
-    excluded_event_id: Option<&str>,
-) -> Result<Vec<String>> {
+    all_day: bool,
+    calendar_id: &'a str,
+    excluded_event_id: Option<&'a str>,
+    window_seconds: i64,
+}
+
+fn matching_events(events: &EventsManager, query: &DuplicateQuery<'_>) -> Result<Vec<EventItem>> {
+    let fetch_padding = query.window_seconds.max(1);
     let candidates = events
         .fetch_events(
-            start - chrono::Duration::seconds(1),
-            end + chrono::Duration::seconds(1),
+            query.start - chrono::Duration::seconds(fetch_padding),
+            query.end + chrono::Duration::seconds(fetch_padding),
             None,
         )
         .context("failed to check for duplicate events")?;
 
     Ok(candidates
         .into_iter()
-        .filter(|event| excluded_event_id != Some(event.identifier.as_str()))
-        .filter(|event| event.title == title)
-        .filter(|event| event.start_date == start && event.end_date == end)
-        .filter(|event| event.calendar_id.as_deref() == Some(calendar_id))
+        .filter(|event| query.excluded_event_id != Some(event.identifier.as_str()))
+        .filter(|event| event.title == query.title)
+        .filter(|event| event.all_day == query.all_day)
+        .filter(|event| {
+            datetime_within_window(event.start_date, query.start, query.window_seconds)
+                && datetime_within_window(event.end_date, query.end, query.window_seconds)
+        })
+        .filter(|event| event.calendar_id.as_deref() == Some(query.calendar_id))
+        .collect())
+}
+
+fn datetime_within_window(
+    candidate: DateTime<Local>,
+    expected: DateTime<Local>,
+    window_seconds: i64,
+) -> bool {
+    let limit_milliseconds = window_seconds.checked_mul(1_000).unwrap_or(i64::MAX);
+    (candidate - expected).num_milliseconds().abs() <= limit_milliseconds
+}
+
+fn duplicate_warnings(events: &[EventItem], window_seconds: i64) -> Vec<String> {
+    events
+        .iter()
         .map(|event| {
             format!(
-                "possible duplicate: {:?} at {} [{}]",
+                "possible duplicate within {window_seconds} seconds: {:?} at {} [{}]",
                 event.title,
                 event.start_date.to_rfc3339(),
                 event.identifier
             )
         })
-        .collect())
+        .collect()
 }
 
 fn ensure_event_calendar_writable(
@@ -814,6 +953,23 @@ pub(crate) fn add_relative_alarms(
     }
 
     Ok(())
+}
+
+pub(crate) fn replace_relative_alarms(
+    events: &EventsManager,
+    id: &str,
+    minutes_before: &[i64],
+) -> Result<()> {
+    validate_alarm_minutes(minutes_before)?;
+    let existing = events
+        .get_event_alarms(id)
+        .with_context(|| format!("failed to read alarms for event {id}"))?;
+    for index in (0..existing.len()).rev() {
+        events
+            .remove_event_alarm(id, index)
+            .with_context(|| format!("failed to remove alarm {index} from event {id}"))?;
+    }
+    add_relative_alarms(events, id, minutes_before)
 }
 
 fn event_report_with_alarms(events: &EventsManager, id: &str) -> Result<EventReport> {
@@ -1082,6 +1238,16 @@ mod tests {
 
         assert!(ensure_valid_event_range(start, same).is_err());
         assert!(ensure_valid_event_range(start, earlier).is_err());
+    }
+
+    #[test]
+    fn duplicate_window_is_exact_by_default_and_tolerant_when_requested() {
+        let expected = parse_start_datetime("2026-07-10T10:00:00+08:00").unwrap();
+        let thirty_seconds_later = expected + chrono::Duration::seconds(30);
+
+        assert!(!datetime_within_window(thirty_seconds_later, expected, 0));
+        assert!(datetime_within_window(thirty_seconds_later, expected, 30));
+        assert!(!datetime_within_window(thirty_seconds_later, expected, 29));
     }
 
     #[test]

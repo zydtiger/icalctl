@@ -186,6 +186,14 @@ pub enum Command {
         #[arg(long = "alarm-minutes-before", value_name = "MINUTES")]
         alarm_minutes_before: Vec<i64>,
 
+        /// Behavior when a matching event already exists.
+        #[arg(long = "if-exists", value_enum, default_value_t = IfExistsArg::Error)]
+        if_exists: IfExistsArg,
+
+        /// Start/end tolerance in seconds for duplicate matching.
+        #[arg(long, default_value_t = 0)]
+        duplicate_window_seconds: i64,
+
         /// Validate and print the resolved event draft without writing to Calendar.
         #[arg(long)]
         dry_run: bool,
@@ -449,6 +457,56 @@ mod tests {
 
         assert!(add.is_ok());
         assert!(update.is_ok());
+    }
+
+    #[test]
+    fn add_accepts_duplicate_policy_and_window() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "add",
+            "Meeting",
+            "--start",
+            "2026-07-10T09:00",
+            "--end",
+            "2026-07-10T10:00",
+            "--if-exists",
+            "skip",
+            "--duplicate-window-seconds",
+            "30",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Add {
+                if_exists: IfExistsArg::Skip,
+                duplicate_window_seconds: 30,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn add_duplicate_policy_defaults_to_error_and_exact_times() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "add",
+            "Meeting",
+            "--start",
+            "2026-07-10T09:00",
+            "--end",
+            "2026-07-10T10:00",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Add {
+                if_exists: IfExistsArg::Error,
+                duplicate_window_seconds: 0,
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -150,6 +150,8 @@ Acceptance checks:
 
 ## 9. Add duplicate detection to single-event add
 
+**Status: Resolved.** Single-event add now defaults to duplicate errors, supports `skip` and patch-style `update`, offers an explicit start/end tolerance window, reports the resulting write action/id, and previews matches without writing.
+
 Problem: single `add` always creates a new event. For agent workflows, accidental retries can create duplicate calendar entries.
 
 Proposed changes:

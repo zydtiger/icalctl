@@ -415,6 +415,25 @@ icalctl add "Project sync" \
   --dry-run --json
 ```
 
+Single-event adds check for an existing event with the same calendar id, title,
+normalized start/end instants, and all-day state. The safe default is
+`--if-exists error`; use `skip` for retry-safe creation or `update` to patch the
+matching event's supplied optional fields. Supplied alarms replace existing
+alarms during an update. Matching is exact by default; opt into a start/end
+tolerance with `--duplicate-window-seconds N`. Dry-run reports the planned
+operation and matching event id without writing:
+
+```sh
+icalctl add "Project sync" \
+  --calendar-id CALENDAR_ID \
+  --start 2026-07-07T09:00 \
+  --end 2026-07-07T09:30 \
+  --if-exists skip \
+  --dry-run --json
+```
+
+Live add JSON reports `write_action` as `created`, `skipped`, or `updated`.
+
 All-day event:
 
 ```sh

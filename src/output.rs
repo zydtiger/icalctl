@@ -219,6 +219,9 @@ fn print_event_detail(event: &EventReport) {
         };
         println!("calendar selection: {selection}");
     }
+    if let Some(action) = &event.write_action {
+        println!("write action: {action}");
+    }
     if let Some(location) = &event.location {
         println!("location: {location}");
     }

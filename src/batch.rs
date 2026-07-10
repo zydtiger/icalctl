@@ -1,7 +1,7 @@
 use crate::calendar::{
     add_relative_alarms, authorized_events_manager, availability_name,
-    ensure_availability_supported, ensure_valid_event_range, resolve_target_calendar,
-    validate_alarm_minutes,
+    ensure_availability_supported, ensure_valid_event_range, replace_relative_alarms,
+    resolve_target_calendar, validate_alarm_minutes,
 };
 use crate::cli::{AvailabilityArg, IfExistsArg, WriteCalendarSelectorArgs};
 use crate::dates::{
@@ -684,19 +684,6 @@ fn update_prepared(events: &EventsManager, prepared: &PreparedEvent, id: &str) -
         replace_relative_alarms(events, &id, alarms)?;
     }
     Ok(id)
-}
-
-fn replace_relative_alarms(events: &EventsManager, id: &str, alarms: &[i64]) -> Result<()> {
-    validate_alarm_minutes(alarms)?;
-    let existing = events
-        .get_event_alarms(id)
-        .with_context(|| format!("failed to read alarms for event {id}"))?;
-    for index in (0..existing.len()).rev() {
-        events
-            .remove_event_alarm(id, index)
-            .with_context(|| format!("failed to remove alarm {index} from event {id}"))?;
-    }
-    add_relative_alarms(events, id, alarms)
 }
 
 fn planned_report(

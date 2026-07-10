@@ -330,10 +330,12 @@ Options:
 - `--availability <AVAILABILITY>`: one of `busy`, `free`, `tentative`, or `unavailable`.
 - `--time-zone <TZID>`: interpret timezone-less inputs in an IANA zone and store that zone on the event.
 - `--alarm-minutes-before <MINUTES>`: add a display alarm before the event. Can be passed more than once.
+- `--if-exists <POLICY>`: `error` (default), `skip`, or `update` for a matching calendar/title/start/end/all-day identity.
+- `--duplicate-window-seconds <N>`: optional start/end tolerance; defaults to exact matching (`0`).
 - `--dry-run`: validate and print the resolved event draft without writing.
 - `--json`: print the created event as JSON.
 
-The created event's JSON has `calendar_selection: "explicit"` when a calendar selector was passed and `calendar_selection: "eventkit_default"` when EventKit's default was used.
+The event JSON has `calendar_selection: "explicit"` when a calendar selector was passed and `calendar_selection: "eventkit_default"` when EventKit's default was used. It reports `write_action` as `created`, `skipped`, or `updated`. Prefer `--if-exists skip` for retry-safe agent writes; preview it first because a duplicate-window tolerance can match a nearby event.
 
 Never run `add` until the calendar choice and final event details have been confirmed by the user.
 
