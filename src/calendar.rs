@@ -3,7 +3,7 @@ use crate::calendar_selector::{
     CalendarSelector, require_single_writable_calendar, resolve_calendars,
 };
 use crate::cli::{
-    AvailabilityArg, BatchCommand, Command, IfExistsArg, ReadCalendarSelectorArgs,
+    AvailabilityArg, BatchCommand, Command, IfExistsArg, ReadCalendarSelectorArgs, TravelCommand,
     WriteCalendarSelectorArgs,
 };
 use crate::dates::{
@@ -204,6 +204,54 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             } => Ok(JsonOutput::Batch {
                 batch: crate::batch::run_batch_add(&file, if_exists, dry_run, continue_on_error)?,
             }),
+        },
+        Command::Travel { command } => match command {
+            TravelCommand::Flight {
+                flight_number,
+                from_airport,
+                to_airport,
+                departure,
+                arrival,
+                calendar_selector,
+                notes,
+                notes_file,
+                url,
+                availability,
+                alarm_minutes_before,
+                if_exists,
+                duplicate_window_seconds,
+                dry_run,
+            } => {
+                let extra_notes = match notes_file {
+                    Some(path) => Some(read_notes_file(&path)?),
+                    None => notes,
+                };
+                let flight = crate::travel::format_flight(crate::travel::FlightInput {
+                    flight_number: &flight_number,
+                    from_airport: &from_airport,
+                    to_airport: &to_airport,
+                    departure: &departure,
+                    arrival: &arrival,
+                    extra_notes: extra_notes.as_deref(),
+                })?;
+                let result = add_event(AddEventInput {
+                    title: flight.title,
+                    start: flight.start,
+                    end: flight.end,
+                    calendar_selector,
+                    notes: Some(flight.notes),
+                    location: Some(flight.location),
+                    url,
+                    all_day: false,
+                    availability: Some(availability),
+                    time_zone: None,
+                    alarm_minutes_before,
+                    if_exists,
+                    duplicate_window_seconds,
+                    dry_run,
+                })?;
+                Ok(write_result_output(result))
+            }
         },
         Command::Delete { id, force } => {
             let deleted = delete_event(&id, force)?;

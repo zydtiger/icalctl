@@ -201,6 +201,8 @@ Acceptance checks:
 
 ## 12. Consider first-class travel helpers later
 
+**Status: Resolved.** Added a thin deterministic `travel flight` formatter that validates offset-bearing flight legs and routes the generated title, route, notes, busy/default-alarm behavior, calendar selection, duplicate policy, dry-run, and write through the existing single-event add pipeline; multi-leg travel remains ordinary batch JSON.
+
 Problem: travel events often need structured route, carrier/flight number, departure/arrival airport local times, and no alarms by default. This is outside the core calendar CRUD API, but it is a common agent use case.
 
 Proposed changes:

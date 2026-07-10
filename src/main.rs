@@ -11,6 +11,7 @@ mod doctor;
 mod eventkit_bridge;
 mod models;
 mod output;
+mod travel;
 
 use anyhow::{Context, Result};
 use clap::Parser;

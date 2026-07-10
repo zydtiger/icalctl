@@ -340,6 +340,95 @@ back events that were already written. Batch JSON reports every item as
 created, skipped, updated, failed, not attempted, or the corresponding
 `would_*` dry-run status, and exits nonzero if any item failed.
 
+## Flight Event Helper
+
+`travel flight` formats one flight leg and routes it through the same add,
+calendar-selection, duplicate, dry-run, and EventKit write pipeline as a
+generic event:
+
+```sh
+icalctl travel flight HO1607 \
+  --from PVG \
+  --to HEL \
+  --departure 2026-07-11T09:25:00+08:00 \
+  --arrival 2026-07-11T14:00:00+03:00 \
+  --calendar-id CALENDAR_ID \
+  --if-exists skip \
+  --dry-run --json
+```
+
+Flight numbers and 3-4 letter airport codes are trimmed and uppercased. Both
+timestamps must be RFC3339 values with explicit offsets, and arrival must be
+after departure as an absolute instant. The helper never infers airport
+timezones and does not store one EventKit item timezone, because a flight has
+two local zones. Offset-bearing input echoes and generated notes remain the
+authoritative local-time record.
+
+The helper deterministically generates:
+
+```text
+Title: Flight HO1607: PVG to HEL
+Location: PVG to HEL
+Availability: busy
+Alarms: none
+
+Flight: HO1607
+Route: PVG to HEL
+Departure: PVG 2026-07-11T09:25:00+08:00
+Arrival: HEL 2026-07-11T14:00:00+03:00
+```
+
+Use `--notes` or `--notes-file` for extra text appended after one blank line.
+The helper also accepts existing calendar selectors, URL, availability, alarm,
+duplicate-policy, duplicate-window, and dry-run flags. It does not fetch
+airline data, status, gates, terminals, bookings, delays, or airport metadata.
+
+The equivalent generic invocation is:
+
+```sh
+icalctl add "Flight HO1607: PVG to HEL" \
+  --start 2026-07-11T09:25:00+08:00 \
+  --end 2026-07-11T14:00:00+03:00 \
+  --location "PVG to HEL" \
+  --notes $'Flight: HO1607\nRoute: PVG to HEL\nDeparture: PVG 2026-07-11T09:25:00+08:00\nArrival: HEL 2026-07-11T14:00:00+03:00' \
+  --availability busy \
+  --calendar-id CALENDAR_ID \
+  --if-exists skip \
+  --dry-run --json
+```
+
+For multiple legs, keep using ordinary batch JSON rather than a separate
+travel schema. This is the canonical recipe:
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "calendar_id": "CALENDAR_ID",
+    "availability": "busy",
+    "alarm_minutes_before": []
+  },
+  "events": [
+    {
+      "client_id": "ho1607-pvg-hel",
+      "title": "Flight HO1607: PVG to HEL",
+      "start": "2026-07-11T09:25:00+08:00",
+      "end": "2026-07-11T14:00:00+03:00",
+      "location": "PVG to HEL",
+      "notes": "Flight: HO1607\nRoute: PVG to HEL\nDeparture: PVG 2026-07-11T09:25:00+08:00\nArrival: HEL 2026-07-11T14:00:00+03:00"
+    },
+    {
+      "client_id": "ay1415-hel-fra",
+      "title": "Flight AY1415: HEL to FRA",
+      "start": "2026-07-12T07:40:00+03:00",
+      "end": "2026-07-12T09:20:00+02:00",
+      "location": "HEL to FRA",
+      "notes": "Flight: AY1415\nRoute: HEL to FRA\nDeparture: HEL 2026-07-12T07:40:00+03:00\nArrival: FRA 2026-07-12T09:20:00+02:00"
+    }
+  ]
+}
+```
+
 ## Row Cache
 
 List-like commands cache their most recent event rows:
@@ -619,6 +708,7 @@ Main modules:
 - `src/dates.rs`: local date parsing
 - `src/models.rs`: JSON/report structs
 - `src/output.rs`: human-readable formatting
+- `src/travel.rs`: pure deterministic flight-to-event formatting
 - `tests/eventkit_manual.rs`: opt-in real EventKit verification with strict safeguards
 
 `eventkit-rs` is the high-level wrapper. If a future feature needs lower-level

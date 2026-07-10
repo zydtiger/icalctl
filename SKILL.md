@@ -376,6 +376,30 @@ existing alarms. By default any preflight error blocks all writes.
 `--continue-on-error` permits partial imports and must be disclosed before
 confirmation because EventKit cannot roll back earlier successful writes.
 
+### `travel flight`
+
+Format one flight leg and pass it through normal event creation:
+
+```sh
+icalctl travel flight HO1607 \
+  --from PVG --to HEL \
+  --departure 2026-07-11T09:25:00+08:00 \
+  --arrival 2026-07-11T14:00:00+03:00 \
+  --calendar-id CALENDAR_ID \
+  --if-exists skip --dry-run --json
+```
+
+Departure and arrival must include explicit RFC3339 offsets. Never infer an
+offset from an airport code. The helper uppercases the flight number and 3-4
+letter airport codes, generates title/location/route notes, defaults to busy
+with no alarms, and deliberately stores no single EventKit timezone. Extra
+`--notes` or `--notes-file` content is appended after one blank line.
+
+All ordinary calendar selectors, URL, availability, alarm, duplicate, and
+dry-run safeguards still apply. One invocation represents one leg. Use the
+documented generic batch JSON recipe for multi-leg itineraries; there is no
+travel-specific batch schema or airline-data lookup.
+
 ### `update`
 
 Update an event by exact EventKit identifier or cached row number.

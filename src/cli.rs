@@ -291,6 +291,12 @@ pub enum Command {
         command: BatchCommand,
     },
 
+    /// Deterministic travel convenience helpers.
+    Travel {
+        #[command(subcommand)]
+        command: TravelCommand,
+    },
+
     /// Delete a calendar event by exact EventKit identifier or cached row number.
     Delete {
         /// EventKit event identifier, or row number from the last event list.
@@ -327,6 +333,66 @@ pub enum BatchCommand {
         /// Process valid items and continue after individual failures.
         #[arg(long)]
         continue_on_error: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TravelCommand {
+    /// Format one flight leg and route it through normal event creation.
+    Flight {
+        /// Flight number, normalized to uppercase.
+        flight_number: String,
+
+        /// Departure airport code (3-4 ASCII letters).
+        #[arg(long = "from")]
+        from_airport: String,
+
+        /// Arrival airport code (3-4 ASCII letters).
+        #[arg(long = "to")]
+        to_airport: String,
+
+        /// RFC3339 departure timestamp with an explicit UTC offset.
+        #[arg(long)]
+        departure: String,
+
+        /// RFC3339 arrival timestamp with an explicit UTC offset.
+        #[arg(long)]
+        arrival: String,
+
+        #[command(flatten)]
+        calendar_selector: WriteCalendarSelectorArgs,
+
+        /// Extra notes appended after the generated flight details.
+        #[arg(long, conflicts_with = "notes_file")]
+        notes: Option<String>,
+
+        /// Read exact extra notes from a UTF-8 file, or stdin with -.
+        #[arg(long, value_name = "PATH")]
+        notes_file: Option<PathBuf>,
+
+        /// Event URL.
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Event availability.
+        #[arg(long, value_enum, default_value = "busy")]
+        availability: AvailabilityArg,
+
+        /// Add a display alarm N minutes before the flight. Repeatable.
+        #[arg(long = "alarm-minutes-before", value_name = "MINUTES")]
+        alarm_minutes_before: Vec<i64>,
+
+        /// Behavior when a matching flight event already exists.
+        #[arg(long = "if-exists", value_enum, default_value_t = IfExistsArg::Error)]
+        if_exists: IfExistsArg,
+
+        /// Start/end tolerance in seconds for duplicate matching.
+        #[arg(long, default_value_t = 0)]
+        duplicate_window_seconds: i64,
+
+        /// Validate and print the resolved event without writing to Calendar.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -615,6 +681,107 @@ mod tests {
                     ..
                 }
             }
+        ));
+    }
+
+    #[test]
+    fn travel_flight_forwards_add_options() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "travel",
+            "flight",
+            "ho1607",
+            "--from",
+            "pvg",
+            "--to",
+            "hel",
+            "--departure",
+            "2026-07-11T09:25:00+08:00",
+            "--arrival",
+            "2026-07-11T14:00:00+03:00",
+            "--calendar",
+            "Travel",
+            "--calendar-source",
+            "iCloud",
+            "--notes",
+            "Booking confirmed",
+            "--url",
+            "https://example.com/flight",
+            "--availability",
+            "free",
+            "--alarm-minutes-before",
+            "30",
+            "--if-exists",
+            "skip",
+            "--duplicate-window-seconds",
+            "60",
+            "--dry-run",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Travel {
+                command: TravelCommand::Flight {
+                    flight_number,
+                    from_airport,
+                    to_airport,
+                    calendar_selector: WriteCalendarSelectorArgs {
+                        calendar: Some(calendar),
+                        calendar_source: Some(source),
+                        ..
+                    },
+                    notes: Some(notes),
+                    url: Some(url),
+                    availability: AvailabilityArg::Free,
+                    alarm_minutes_before,
+                    if_exists: IfExistsArg::Skip,
+                    duplicate_window_seconds: 60,
+                    dry_run: true,
+                    ..
+                }
+            } if flight_number == "ho1607"
+                && from_airport == "pvg"
+                && to_airport == "hel"
+                && calendar == "Travel"
+                && source == "iCloud"
+                && notes == "Booking confirmed"
+                && url == "https://example.com/flight"
+                && alarm_minutes_before == [30]
+        ));
+    }
+
+    #[test]
+    fn travel_flight_defaults_to_busy_with_no_alarms() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "travel",
+            "flight",
+            "HO1607",
+            "--from",
+            "PVG",
+            "--to",
+            "HEL",
+            "--departure",
+            "2026-07-11T09:25:00+08:00",
+            "--arrival",
+            "2026-07-11T14:00:00+03:00",
+            "--notes-file",
+            "flight-notes.txt",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Travel {
+                command: TravelCommand::Flight {
+                    availability: AvailabilityArg::Busy,
+                    alarm_minutes_before,
+                    notes_file: Some(notes_file),
+                    ..
+                }
+            } if alarm_minutes_before.is_empty()
+                && notes_file.to_str() == Some("flight-notes.txt")
         ));
     }
 }
