@@ -48,6 +48,19 @@ Cargo's normal bin directory, usually:
 
 Make sure `~/.cargo/bin` is in `PATH`.
 
+### Install the agent skill
+
+The recommended way to install the bundled `icalctl` agent skill is to copy
+`SKILL.md` into `~/.agents/skills/icalctl-skill/`:
+
+```sh
+mkdir -p ~/.agents/skills/icalctl-skill
+cp SKILL.md ~/.agents/skills/icalctl-skill/SKILL.md
+```
+
+Run these commands from the project root. Copy the file again after updating
+the repository to keep the installed skill current.
+
 ## Permissions
 
 `icalctl` embeds the Calendar privacy usage strings in the Mach-O binary through

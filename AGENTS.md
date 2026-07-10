@@ -6,6 +6,19 @@
 
 Calendar writes are real user-data mutations. Preserve the confirmation and calendar-selection safeguards documented in `SKILL.md`, and prefer exact EventKit calendar ids in automated workflows.
 
+## Agent Skill Installation
+
+The recommended installation for the bundled agent skill is to copy the
+project's `SKILL.md` to `~/.agents/skills/icalctl-skill/SKILL.md`:
+
+```sh
+mkdir -p ~/.agents/skills/icalctl-skill
+cp SKILL.md ~/.agents/skills/icalctl-skill/SKILL.md
+```
+
+Run these commands from the project root, and copy the file again after
+updating the repository so the installed skill stays current.
+
 ## Git Commit Prefixes
 
 Use Conventional Commit-style subjects in the form `prefix: concise imperative summary`:
