@@ -160,6 +160,12 @@ For all-day events, pass date-only values with `--all-day`:
 icalctl add "Conference" --calendar-id CALENDAR_ID --start 2026-07-07 --end 2026-07-09 --all-day
 ```
 
+All-day start and end dates are user-facing inclusive dates. The example above
+covers July 7, 8, and 9. Internally, `icalctl` converts the date-only end to
+EventKit's exclusive next-midnight boundary, July 10 at 00:00 in this example.
+For a one-day all-day event, pass the same date for both values, such as
+`--start 2026-07-07 --end 2026-07-07 --all-day`.
+
 When the user gives relative dates such as "today", "tomorrow", or "next Friday", resolve them to concrete dates before confirming the write.
 
 ## JSON Output
