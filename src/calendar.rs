@@ -4,14 +4,15 @@ use crate::cli::{AvailabilityArg, Command, ReadCalendarSelectorArgs, WriteCalend
 use crate::dates::{parse_end_datetime, parse_start_datetime, today_range};
 use crate::eventkit_bridge::{create_event_in_calendar, move_event_to_calendar};
 use crate::models::{
-    AlarmReport, CalendarReport, DeletedReport, EventReport, JsonOutput, StatusReport,
+    AlarmReport, CalendarReport, CalendarSelection, DeletedReport, EventReport, JsonOutput,
+    StatusReport,
 };
 use crate::output::event_time_range;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local};
 use eventkit::{
     AlarmInfo, AlarmProximity, AuthorizationStatus, CalendarInfo, EventAvailability, EventDraft,
-    EventItem, EventPatch, EventsManager,
+    EventItem, EventKitError, EventPatch, EventsManager,
 };
 use std::io::{self, Write};
 
@@ -22,13 +23,25 @@ pub fn run(command: Command) -> Result<JsonOutput> {
         })),
         Command::Calendars => {
             let events = authorized_events_manager()?;
+            let default_id = match events.default_calendar() {
+                Ok(calendar) => Some(calendar.identifier),
+                Err(EventKitError::NoDefaultCalendar) => None,
+                Err(error) => return Err(error).context("failed to read default calendar"),
+            };
             let calendars = events
                 .list_calendars()
-                .context("failed to list Calendar calendars through EventKit")?
-                .iter()
-                .map(CalendarReport::from)
-                .collect();
+                .context("failed to list Calendar calendars through EventKit")?;
+            let calendars = calendar_reports(&calendars, default_id.as_deref());
             Ok(JsonOutput::Calendars { calendars })
+        }
+        Command::DefaultCalendar => {
+            let events = authorized_events_manager()?;
+            let calendar = events
+                .default_calendar()
+                .context("no default calendar is available for new events")?;
+            let mut calendar = CalendarReport::from(&calendar);
+            calendar.is_default_for_new_events = true;
+            Ok(JsonOutput::DefaultCalendar { calendar })
         }
         Command::List {
             from,
@@ -195,6 +208,7 @@ fn add_event(input: AddEventInput) -> Result<EventReport> {
         parse_end_datetime(&input.end).with_context(|| format!("invalid --end: {}", input.end))?;
     ensure_valid_event_range(start, end)?;
 
+    let selection = calendar_selection_for_write(&input.calendar_selector);
     let events = authorized_events_manager()?;
     let target = resolve_target_calendar(&events, &input.calendar_selector, true)?;
 
@@ -215,7 +229,9 @@ fn add_event(input: AddEventInput) -> Result<EventReport> {
         .context("failed to create event through EventKit")?;
 
     add_relative_alarms(&events, &id, &input.alarm_minutes_before)?;
-    event_report_with_alarms(&events, &id)
+    let mut report = event_report_with_alarms(&events, &id)?;
+    report.calendar_selection = Some(selection);
+    Ok(report)
 }
 
 fn update_event(input: UpdateEventInput) -> Result<EventReport> {
@@ -420,6 +436,25 @@ fn resolve_target_calendar(
 
 fn write_selector_is_empty(args: &WriteCalendarSelectorArgs) -> bool {
     args.calendar.is_none() && args.calendar_id.is_none()
+}
+
+fn calendar_selection_for_write(args: &WriteCalendarSelectorArgs) -> CalendarSelection {
+    if write_selector_is_empty(args) {
+        CalendarSelection::EventkitDefault
+    } else {
+        CalendarSelection::Explicit
+    }
+}
+
+fn calendar_reports(calendars: &[CalendarInfo], default_id: Option<&str>) -> Vec<CalendarReport> {
+    calendars
+        .iter()
+        .map(|calendar| {
+            let mut report = CalendarReport::from(calendar);
+            report.is_default_for_new_events = default_id == Some(calendar.identifier.as_str());
+            report
+        })
+        .collect()
 }
 
 fn ensure_event_calendar_writable(
@@ -630,6 +665,7 @@ impl From<AvailabilityArg> for EventAvailability {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eventkit::CalendarType;
 
     #[test]
     fn nullable_patch_clear_wins() {
@@ -649,5 +685,62 @@ mod tests {
             EventAvailability::from(AvailabilityArg::Unavailable),
             EventAvailability::Unavailable
         );
+    }
+
+    #[test]
+    fn exactly_one_calendar_is_marked_as_default() {
+        let calendars = vec![calendar("A", "Work"), calendar("B", "Personal")];
+        let reports = calendar_reports(&calendars, Some("B"));
+
+        assert_eq!(
+            reports
+                .iter()
+                .filter(|calendar| calendar.is_default_for_new_events)
+                .count(),
+            1
+        );
+        assert!(reports[1].is_default_for_new_events);
+        assert!(reports[1].allows_modifications);
+    }
+
+    #[test]
+    fn add_selection_reports_explicit_or_eventkit_default() {
+        let implicit = WriteCalendarSelectorArgs {
+            calendar: None,
+            calendar_id: None,
+            calendar_source: None,
+            source_id: None,
+        };
+        let explicit = WriteCalendarSelectorArgs {
+            calendar: None,
+            calendar_id: Some("B".to_string()),
+            calendar_source: None,
+            source_id: None,
+        };
+
+        assert_eq!(
+            calendar_selection_for_write(&implicit),
+            CalendarSelection::EventkitDefault
+        );
+        assert_eq!(
+            calendar_selection_for_write(&explicit),
+            CalendarSelection::Explicit
+        );
+    }
+
+    fn calendar(id: &str, title: &str) -> CalendarInfo {
+        CalendarInfo {
+            identifier: id.to_string(),
+            title: title.to_string(),
+            source: Some("iCloud".to_string()),
+            source_id: Some("SOURCE".to_string()),
+            calendar_type: CalendarType::CalDAV,
+            allows_modifications: true,
+            is_immutable: false,
+            is_subscribed: false,
+            color: None,
+            allowed_entity_types: vec!["event".to_string()],
+            supported_event_availabilities: Vec::new(),
+        }
     }
 }

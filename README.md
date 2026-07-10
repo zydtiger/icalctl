@@ -77,6 +77,7 @@ icalctl status --json
 ```sh
 icalctl status
 icalctl calendars
+icalctl default-calendar
 icalctl today
 icalctl upcoming --days 7
 icalctl list --from 2026-07-07 --to 2026-07-07
@@ -129,14 +130,20 @@ Pass `--json` to any command:
 ```sh
 icalctl today --json
 icalctl calendars --json
+icalctl default-calendar --json
 icalctl add "Meeting" --start 2026-07-07T09:00 --end 2026-07-07T09:30 --json
 ```
 
 JSON is compact by default and is the intended scripting interface.
 
+`calendars --json` marks the EventKit default target with
+`is_default_for_new_events: true`. `default-calendar --json` returns that
+calendar directly, including its id, source, type, and writability.
+
 Event JSON includes the selected calendar's title, EventKit id, source title,
 and source id as `calendar`, `calendar_id`, `calendar_source`, and
-`calendar_source_id`.
+`calendar_source_id`. A successful `add --json` also reports
+`calendar_selection` as `explicit` or `eventkit_default`.
 
 ## Calendar Selection
 
@@ -158,6 +165,12 @@ source id, calendar id, and writability. Qualify a duplicate title by source:
 ```sh
 icalctl today --calendar-source iCloud --calendar Calendar
 icalctl today --source-id SOURCE_ID --calendar Calendar
+```
+
+Before relying on the implicit EventKit default, inspect it explicitly:
+
+```sh
+icalctl default-calendar --json
 ```
 
 ## Row Cache

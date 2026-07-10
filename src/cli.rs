@@ -73,6 +73,9 @@ pub enum Command {
     /// List calendars available in Calendar.app.
     Calendars,
 
+    /// Show the system default calendar for new events.
+    DefaultCalendar,
+
     /// List events in a bounded date range.
     List {
         /// Start date or datetime. Examples: 2026-07-06, 2026-07-06T09:00.
@@ -268,6 +271,13 @@ mod tests {
         let result = Cli::try_parse_from(["icalctl", "today", "--calendar-source", "iCloud"]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_calendar_command_parses() {
+        let cli = Cli::try_parse_from(["icalctl", "default-calendar"]).unwrap();
+
+        assert!(matches!(cli.command, Command::DefaultCalendar));
     }
 
     #[test]

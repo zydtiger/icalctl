@@ -23,6 +23,7 @@ cargo install --path .
 - Do not create, update, move, or delete an event until the user has explicitly confirmed the final action.
 - For every request to add an event, analyze the best-fit calendar from the user's available calendars and confirm that calendar choice before writing.
 - Prefer exact `--calendar-id` selectors for agent writes and reads. Title-only selectors are acceptable only when the title is unique.
+- Use `icalctl default-calendar --json` before any workflow that intentionally relies on EventKit's implicit default target.
 - Quote titles, calendar names, notes, locations, and URLs that contain spaces or shell metacharacters.
 - Use row numbers only immediately after a fresh `today`, `upcoming`, `list`, or `search`; otherwise use the exact EventKit id or rerun the list command.
 
@@ -171,6 +172,19 @@ Use this before adding events so the agent can choose the best-fit calendar. The
 
 When duplicate titles exist, title-only selection fails and prints the matching source, source id, calendar id, and writability. Use `--calendar-id`, or qualify a title with `--calendar-source` or `--source-id`.
 
+The default target, when EventKit reports one, has `is_default_for_new_events: true`.
+
+### `default-calendar`
+
+Show the EventKit default calendar for new events.
+
+```sh
+icalctl default-calendar
+icalctl default-calendar --json
+```
+
+Use this before intentionally omitting all calendar selectors from `add`. The JSON output includes the calendar id, title, source, source id, type, writability, and `is_default_for_new_events: true`.
+
 ### `today`
 
 List today's events.
@@ -263,6 +277,8 @@ Options:
 - `--availability <AVAILABILITY>`: one of `busy`, `free`, `tentative`, or `unavailable`.
 - `--alarm-minutes-before <MINUTES>`: add a display alarm before the event. Can be passed more than once.
 - `--json`: print the created event as JSON.
+
+The created event's JSON has `calendar_selection: "explicit"` when a calendar selector was passed and `calendar_selection: "eventkit_default"` when EventKit's default was used.
 
 Never run `add` until the calendar choice and final event details have been confirmed by the user.
 

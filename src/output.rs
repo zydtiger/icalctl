@@ -11,6 +11,10 @@ pub fn print_human_output(output: &JsonOutput) {
                 print_calendar(calendar);
             }
         }
+        JsonOutput::DefaultCalendar { calendar } => {
+            println!("Default calendar for new events");
+            print_calendar(calendar);
+        }
         JsonOutput::Events { events } => print_events(events),
         JsonOutput::Event { event } => print_event_detail(event),
         JsonOutput::Deleted { deleted } => {
@@ -21,14 +25,20 @@ pub fn print_human_output(output: &JsonOutput) {
 
 fn print_calendar(calendar: &CalendarReport) {
     let source = calendar.source.as_deref().unwrap_or("unknown source");
+    let default_marker = if calendar.is_default_for_new_events {
+        " default-for-new-events=true"
+    } else {
+        ""
+    };
     println!(
-        "- {} [{}] source={} writable={} subscribed={} id={}",
+        "- {} [{}] source={} writable={} subscribed={} id={}{}",
         calendar.title,
         calendar.calendar_type,
         source,
         calendar.allows_modifications,
         calendar.is_subscribed,
-        calendar.id
+        calendar.id,
+        default_marker
     );
 }
 
@@ -69,6 +79,13 @@ fn print_event_detail(event: &EventReport) {
         } else {
             println!("calendar source: {source}");
         }
+    }
+    if let Some(selection) = event.calendar_selection {
+        let selection = match selection {
+            crate::models::CalendarSelection::Explicit => "explicit",
+            crate::models::CalendarSelection::EventkitDefault => "EventKit default",
+        };
+        println!("calendar selection: {selection}");
     }
     if let Some(location) = &event.location {
         println!("location: {location}");

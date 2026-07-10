@@ -6,6 +6,7 @@ use serde::Serialize;
 pub enum JsonOutput {
     Status(StatusReport),
     Calendars { calendars: Vec<CalendarReport> },
+    DefaultCalendar { calendar: CalendarReport },
     Events { events: Vec<EventReport> },
     Event { event: Box<EventReport> },
     Deleted { deleted: DeletedReport },
@@ -29,6 +30,14 @@ pub struct CalendarReport {
     pub color_rgba: Option<(f64, f64, f64, f64)>,
     pub allowed_entity_types: Vec<String>,
     pub supported_event_availabilities: Vec<String>,
+    pub is_default_for_new_events: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CalendarSelection {
+    Explicit,
+    EventkitDefault,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +51,7 @@ pub struct EventReport {
     pub calendar_id: Option<String>,
     pub calendar_source: Option<String>,
     pub calendar_source_id: Option<String>,
+    pub calendar_selection: Option<CalendarSelection>,
     pub location: Option<String>,
     pub notes: Option<String>,
     pub url: Option<String>,
@@ -96,6 +106,7 @@ impl From<&CalendarInfo> for CalendarReport {
             color_rgba: calendar.color,
             allowed_entity_types: calendar.allowed_entity_types.clone(),
             supported_event_availabilities: calendar.supported_event_availabilities.clone(),
+            is_default_for_new_events: false,
         }
     }
 }
@@ -112,6 +123,7 @@ impl From<&EventItem> for EventReport {
             calendar_id: event.calendar_id.clone(),
             calendar_source: None,
             calendar_source_id: None,
+            calendar_selection: None,
             location: event.location.clone(),
             notes: event.notes.clone(),
             url: event.URL.clone(),
@@ -155,5 +167,55 @@ impl From<&AlarmInfo> for AlarmReport {
             proximity: format!("{:?}", alarm.proximity),
             alarm_type: format!("{:?}", alarm.alarm_type),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eventkit::CalendarType;
+    use serde_json::json;
+
+    fn calendar() -> CalendarInfo {
+        CalendarInfo {
+            identifier: "CAL-1".to_string(),
+            title: "Calendar".to_string(),
+            source: Some("iCloud".to_string()),
+            source_id: Some("SOURCE-1".to_string()),
+            calendar_type: CalendarType::CalDAV,
+            allows_modifications: true,
+            is_immutable: false,
+            is_subscribed: false,
+            color: None,
+            allowed_entity_types: vec!["event".to_string()],
+            supported_event_availabilities: vec!["busy".to_string()],
+        }
+    }
+
+    #[test]
+    fn default_calendar_output_includes_identity_and_default_marker() {
+        let mut calendar = CalendarReport::from(&calendar());
+        calendar.is_default_for_new_events = true;
+        let value = serde_json::to_value(JsonOutput::DefaultCalendar { calendar }).unwrap();
+
+        assert_eq!(value["type"], "default_calendar");
+        assert_eq!(value["calendar"]["id"], "CAL-1");
+        assert_eq!(value["calendar"]["source"], "iCloud");
+        assert_eq!(value["calendar"]["source_id"], "SOURCE-1");
+        assert_eq!(value["calendar"]["calendar_type"], "CalDAV");
+        assert_eq!(value["calendar"]["allows_modifications"], true);
+        assert_eq!(value["calendar"]["is_default_for_new_events"], true);
+    }
+
+    #[test]
+    fn calendar_selection_serializes_for_add_provenance() {
+        assert_eq!(
+            serde_json::to_value(CalendarSelection::Explicit).unwrap(),
+            json!("explicit")
+        );
+        assert_eq!(
+            serde_json::to_value(CalendarSelection::EventkitDefault).unwrap(),
+            json!("eventkit_default")
+        );
     }
 }

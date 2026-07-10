@@ -24,6 +24,8 @@ Acceptance checks:
 
 ## 2. Show and expose the default new-event calendar
 
+**Status: Resolved.** Added default-calendar reporting, default markers in calendar lists, and explicit-versus-EventKit-default provenance in add output.
+
 Problem: omitting `--calendar` uses EventKit's default calendar, but users and agents cannot see that target from `icalctl` before writing. In the observed setup, the default new-event calendar was `Tutor` on iCloud, not the requested standard iCloud `Calendar`.
 
 Proposed changes:
