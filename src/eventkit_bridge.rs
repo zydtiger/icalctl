@@ -1,9 +1,13 @@
 use anyhow::{Context, Result, anyhow};
 use eventkit::EventDraft;
 use objc2_event_kit::{EKCalendarItem, EKEvent, EKEventStore, EKSpan};
-use objc2_foundation::{NSDate, NSString, NSURL};
+use objc2_foundation::{NSDate, NSString, NSTimeZone, NSURL};
 
-pub fn create_event_in_calendar(draft: &EventDraft<'_>, calendar_id: &str) -> Result<String> {
+pub fn create_event_in_calendar(
+    draft: &EventDraft<'_>,
+    calendar_id: &str,
+    time_zone: Option<&str>,
+) -> Result<String> {
     let store = unsafe { EKEventStore::new() };
     let calendar_id = NSString::from_str(calendar_id);
     let calendar = unsafe { store.calendarWithIdentifier(&calendar_id) }
@@ -40,6 +44,9 @@ pub fn create_event_in_calendar(draft: &EventDraft<'_>, calendar_id: &str) -> Re
     if let Some(availability) = draft.availability {
         unsafe { event.setAvailability(availability.to_ek()) };
     }
+    if let Some(time_zone) = time_zone {
+        set_time_zone(&event, time_zone)?;
+    }
 
     unsafe {
         store
@@ -53,22 +60,34 @@ pub fn create_event_in_calendar(draft: &EventDraft<'_>, calendar_id: &str) -> Re
         .ok_or_else(|| anyhow!("EventKit did not return an id for the created event"))
 }
 
-pub fn move_event_to_calendar(event_id: &str, calendar_id: &str) -> Result<String> {
+pub fn update_event_calendar_metadata(
+    event_id: &str,
+    calendar_id: Option<&str>,
+    time_zone: Option<Option<&str>>,
+) -> Result<String> {
     let store = unsafe { EKEventStore::new() };
     unsafe { store.refreshSourcesIfNecessary() };
 
     let event_id = NSString::from_str(event_id);
     let event =
         unsafe { store.eventWithIdentifier(&event_id) }.context("event is no longer available")?;
-    let calendar_id = NSString::from_str(calendar_id);
-    let calendar = unsafe { store.calendarWithIdentifier(&calendar_id) }
-        .context("selected calendar is no longer available")?;
 
     unsafe {
-        event.setCalendar(Some(&calendar));
+        if let Some(calendar_id) = calendar_id {
+            let calendar_id = NSString::from_str(calendar_id);
+            let calendar = store
+                .calendarWithIdentifier(&calendar_id)
+                .context("selected calendar is no longer available")?;
+            event.setCalendar(Some(&calendar));
+        }
+        match time_zone {
+            Some(Some(value)) => set_time_zone(&event, value)?,
+            Some(None) => event.setTimeZone(None),
+            None => {}
+        }
         store
             .saveEvent_span_commit_error(&event, EKSpan::ThisEvent, true)
-            .map_err(|error| anyhow!("failed to move event: {error:?}"))?;
+            .map_err(|error| anyhow!("failed to update event calendar metadata: {error:?}"))?;
         store.refreshSourcesIfNecessary();
     }
 
@@ -90,4 +109,19 @@ pub fn validate_event_url(value: &str) -> Result<()> {
     NSURL::URLWithString_encodingInvalidCharacters(&ns_value, false)
         .map(|_| ())
         .ok_or_else(|| anyhow!("invalid URL: {value}"))
+}
+
+pub fn validate_event_time_zone(value: &str) -> Result<()> {
+    let value = NSString::from_str(value);
+    NSTimeZone::timeZoneWithName(&value)
+        .map(|_| ())
+        .ok_or_else(|| anyhow!("unknown IANA time zone: {value}"))
+}
+
+fn set_time_zone(item: &EKCalendarItem, value: &str) -> Result<()> {
+    let time_zone = NSString::from_str(value);
+    let time_zone = NSTimeZone::timeZoneWithName(&time_zone)
+        .ok_or_else(|| anyhow!("unknown IANA time zone: {value}"))?;
+    unsafe { item.setTimeZone(Some(&time_zone)) };
+    Ok(())
 }

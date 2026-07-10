@@ -59,6 +59,8 @@ Acceptance checks:
 
 ## 4. Improve timezone handling and reporting
 
+**Status: Resolved.** Preserved offset-bearing write inputs, made `--time-zone` control naive input parsing and EventKit storage, added UTC/local/event-timezone and duration fields, included offsets in human output, and covered timezone-crossing routes.
+
 Problem: offset datetimes are accepted, but EventKit stores absolute instants and output may be rendered in the machine's local timezone. For travel, users need confidence that airport-local times and offsets were interpreted correctly.
 
 Proposed changes:

@@ -98,7 +98,8 @@ icalctl delete --help
 
 ## Date Input
 
-Date-only values use the local timezone.
+Date-only values use the Mac's local timezone unless `add` or `update` supplies
+`--time-zone`, in which case their midnight boundaries use that IANA zone.
 
 For `--from`, a date-only value starts at local midnight:
 
@@ -123,6 +124,42 @@ Accepted datetime forms include:
 2026-07-07T09:30:00+08:00
 ```
 
+Offset inputs represent absolute instants. Write and dry-run JSON preserves the
+original strings as `start_input` and `end_input`, and also reports
+`start_utc`, `end_utc`, `start_local`, `end_local`, and `duration_seconds`.
+
+For example, these equal displayed clock times are one hour apart:
+
+```sh
+icalctl add "Flight" \
+  --start 2026-07-12T15:55:00+03:00 \
+  --end 2026-07-12T15:55:00+02:00 \
+  --time-zone Europe/Berlin \
+  --dry-run --json
+```
+
+Datetime precedence is:
+
+- No `--time-zone` + timezone-less input: use the Mac's local timezone.
+- No `--time-zone` + explicit offset: use the explicit offset.
+- `--time-zone` + timezone-less input: interpret it in the named IANA zone.
+- `--time-zone` + explicit offset: use the explicit offset and store the named zone for EventKit display.
+
+Timezone-less times that fall in a DST gap or overlap are rejected; provide an
+explicit offset to select an unambiguous instant.
+
+For example,
+`--start 2026-07-12T15:55 --time-zone Europe/Berlin` means 15:55 in Berlin,
+not on the Mac's local clock. On update, timezone-less inputs use the supplied
+`--time-zone`; without that flag they use Mac local time even if the event
+already has stored timezone metadata. The existing stored timezone remains
+unchanged unless `--time-zone` or `--clear-time-zone` is passed. Use
+`update <id> --clear-time-zone` to remove it.
+
+EventKit does not store separate departure and arrival timezone names, so
+travel workflows should use offset-bearing start/end inputs; their distinct
+offsets remain in the input echo fields.
+
 ## JSON Output
 
 Pass `--json` to any command:
@@ -144,6 +181,10 @@ Event JSON includes the selected calendar's title, EventKit id, source title,
 and source id as `calendar`, `calendar_id`, `calendar_source`, and
 `calendar_source_id`. A successful `add --json` also reports
 `calendar_selection` as `explicit` or `eventkit_default`.
+
+Event read-back JSON always includes UTC/local timestamps and duration. When
+EventKit reports an item timezone, it also includes
+`start_in_event_time_zone` and `end_in_event_time_zone`.
 
 ## Calendar Selection
 
@@ -302,6 +343,13 @@ Add another alarm:
 
 ```sh
 icalctl update 1 --add-alarm-minutes-before 30
+```
+
+Set or clear the EventKit item timezone:
+
+```sh
+icalctl update 1 --time-zone America/New_York
+icalctl update 1 --clear-time-zone
 ```
 
 ## Deleting Events

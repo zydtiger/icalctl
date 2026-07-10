@@ -1,3 +1,4 @@
+use crate::dates::{datetime_in_time_zone, utc_datetime};
 use eventkit::{AlarmInfo, CalendarInfo, EventItem, ParticipantInfo};
 use serde::Serialize;
 
@@ -60,6 +61,15 @@ pub struct EventReport {
     pub title: String,
     pub start: String,
     pub end: String,
+    pub start_input: Option<String>,
+    pub end_input: Option<String>,
+    pub start_utc: String,
+    pub end_utc: String,
+    pub start_local: String,
+    pub end_local: String,
+    pub start_in_event_time_zone: Option<String>,
+    pub end_in_event_time_zone: Option<String>,
+    pub duration_seconds: i64,
     pub all_day: bool,
     pub calendar: Option<String>,
     pub calendar_id: Option<String>,
@@ -90,6 +100,15 @@ pub struct EventDraftReport {
     pub title: String,
     pub start: String,
     pub end: String,
+    pub start_input: Option<String>,
+    pub end_input: Option<String>,
+    pub start_utc: String,
+    pub end_utc: String,
+    pub start_local: String,
+    pub end_local: String,
+    pub start_in_event_time_zone: Option<String>,
+    pub end_in_event_time_zone: Option<String>,
+    pub duration_seconds: i64,
     pub all_day: bool,
     pub timed: bool,
     pub calendar: String,
@@ -97,6 +116,7 @@ pub struct EventDraftReport {
     pub calendar_source: Option<String>,
     pub calendar_source_id: Option<String>,
     pub calendar_selection: Option<CalendarSelection>,
+    pub time_zone: Option<String>,
     pub availability: String,
     pub alarm_count: usize,
     pub has_notes: bool,
@@ -149,11 +169,30 @@ impl From<&CalendarInfo> for CalendarReport {
 
 impl From<&EventItem> for EventReport {
     fn from(event: &EventItem) -> Self {
+        let start_local = event.start_date.to_rfc3339();
+        let end_local = event.end_date.to_rfc3339();
+        let start_in_event_time_zone = event
+            .timezone
+            .as_deref()
+            .and_then(|time_zone| datetime_in_time_zone(event.start_date, time_zone).ok());
+        let end_in_event_time_zone = event
+            .timezone
+            .as_deref()
+            .and_then(|time_zone| datetime_in_time_zone(event.end_date, time_zone).ok());
         Self {
             id: event.identifier.clone(),
             title: event.title.clone(),
-            start: event.start_date.to_rfc3339(),
-            end: event.end_date.to_rfc3339(),
+            start: start_local.clone(),
+            end: end_local.clone(),
+            start_input: None,
+            end_input: None,
+            start_utc: utc_datetime(event.start_date),
+            end_utc: utc_datetime(event.end_date),
+            start_local,
+            end_local,
+            start_in_event_time_zone,
+            end_in_event_time_zone,
+            duration_seconds: (event.end_date - event.start_date).num_seconds(),
             all_day: event.all_day,
             calendar: event.calendar_title.clone(),
             calendar_id: event.calendar_id.clone(),
@@ -209,7 +248,8 @@ impl From<&AlarmInfo> for AlarmReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eventkit::CalendarType;
+    use crate::dates::{parse_end_datetime, parse_start_datetime};
+    use eventkit::{CalendarType, EventAvailability, EventStatus};
     use serde_json::json;
 
     fn calendar() -> CalendarInfo {
@@ -265,6 +305,15 @@ mod tests {
                 title: "Meeting".to_string(),
                 start: "2026-07-10T09:00:00+08:00".to_string(),
                 end: "2026-07-10T10:00:00+08:00".to_string(),
+                start_input: Some("2026-07-10T09:00:00+08:00".to_string()),
+                end_input: Some("2026-07-10T10:00:00+08:00".to_string()),
+                start_utc: "2026-07-10T01:00:00+00:00".to_string(),
+                end_utc: "2026-07-10T02:00:00+00:00".to_string(),
+                start_local: "2026-07-10T09:00:00+08:00".to_string(),
+                end_local: "2026-07-10T10:00:00+08:00".to_string(),
+                start_in_event_time_zone: Some("2026-07-10T03:00:00+02:00".to_string()),
+                end_in_event_time_zone: Some("2026-07-10T04:00:00+02:00".to_string()),
+                duration_seconds: 3600,
                 all_day: false,
                 timed: true,
                 calendar: "Work".to_string(),
@@ -272,6 +321,7 @@ mod tests {
                 calendar_source: Some("iCloud".to_string()),
                 calendar_source_id: Some("SOURCE-1".to_string()),
                 calendar_selection: Some(CalendarSelection::Explicit),
+                time_zone: Some("Europe/Berlin".to_string()),
                 availability: "busy".to_string(),
                 alarm_count: 1,
                 has_notes: true,
@@ -286,8 +336,54 @@ mod tests {
         assert_eq!(value["would_write"], false);
         assert_eq!(value["draft"]["calendar_id"], "CAL-1");
         assert_eq!(value["draft"]["timed"], true);
+        assert_eq!(value["draft"]["start_input"], "2026-07-10T09:00:00+08:00");
+        assert_eq!(value["draft"]["start_utc"], "2026-07-10T01:00:00+00:00");
+        assert_eq!(value["draft"]["time_zone"], "Europe/Berlin");
+        assert_eq!(value["draft"]["duration_seconds"], 3600);
         assert_eq!(value["draft"]["alarm_count"], 1);
         assert_eq!(value["draft"]["has_notes"], true);
         assert_eq!(value["draft"]["has_url"], true);
+    }
+
+    #[test]
+    fn event_readback_reports_utc_and_stored_time_zone() {
+        let event = EventItem {
+            identifier: "EVENT-1".to_string(),
+            title: "Flight".to_string(),
+            notes: None,
+            location: None,
+            start_date: parse_start_datetime("2026-07-12T15:55:00+03:00").unwrap(),
+            end_date: parse_end_datetime("2026-07-12T15:55:00+02:00").unwrap(),
+            all_day: false,
+            calendar_title: Some("Travel".to_string()),
+            calendar_id: Some("CAL-1".to_string()),
+            URL: None,
+            availability: EventAvailability::Busy,
+            status: EventStatus::Confirmed,
+            is_detached: false,
+            occurrence_date: None,
+            structured_location: None,
+            creation_date: None,
+            last_modified_date: None,
+            external_identifier: None,
+            timezone: Some("Europe/Berlin".to_string()),
+            attachments_count: 0,
+            attendees: Vec::new(),
+            organizer: None,
+        };
+
+        let report = EventReport::from(&event);
+
+        assert_eq!(report.duration_seconds, 3600);
+        assert_eq!(report.start_utc, "2026-07-12T12:55:00+00:00");
+        assert_eq!(report.end_utc, "2026-07-12T13:55:00+00:00");
+        assert_eq!(
+            report.start_in_event_time_zone.as_deref(),
+            Some("2026-07-12T14:55:00+02:00")
+        );
+        assert_eq!(
+            report.end_in_event_time_zone.as_deref(),
+            Some("2026-07-12T15:55:00+02:00")
+        );
     }
 }

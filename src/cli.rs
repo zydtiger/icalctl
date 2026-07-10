@@ -165,6 +165,10 @@ pub enum Command {
         #[arg(long, value_enum)]
         availability: Option<AvailabilityArg>,
 
+        /// IANA zone for timezone-less inputs and EventKit storage, for example Europe/Berlin.
+        #[arg(long = "time-zone", value_name = "TZID")]
+        time_zone: Option<String>,
+
         /// Add a display alarm N minutes before the event. Can be passed more than once.
         #[arg(long = "alarm-minutes-before", value_name = "MINUTES")]
         alarm_minutes_before: Vec<i64>,
@@ -229,6 +233,18 @@ pub enum Command {
         /// Event availability.
         #[arg(long, value_enum)]
         availability: Option<AvailabilityArg>,
+
+        /// IANA zone for timezone-less updated times and EventKit storage.
+        #[arg(
+            long = "time-zone",
+            value_name = "TZID",
+            conflicts_with = "clear_time_zone"
+        )]
+        time_zone: Option<String>,
+
+        /// Clear the event's stored time zone.
+        #[arg(long)]
+        clear_time_zone: bool,
 
         /// Add a display alarm N minutes before the event. Can be passed more than once.
         #[arg(long = "add-alarm-minutes-before", value_name = "MINUTES")]
@@ -330,5 +346,38 @@ mod tests {
 
         assert!(add.is_ok());
         assert!(update.is_ok());
+    }
+
+    #[test]
+    fn add_and_update_accept_event_time_zone() {
+        let add = Cli::try_parse_from([
+            "icalctl",
+            "add",
+            "Flight",
+            "--start",
+            "2026-07-12T15:55:00+03:00",
+            "--end",
+            "2026-07-12T15:55:00+02:00",
+            "--time-zone",
+            "Europe/Berlin",
+        ]);
+        let update = Cli::try_parse_from(["icalctl", "update", "EVENT-ID", "--clear-time-zone"]);
+
+        assert!(add.is_ok());
+        assert!(update.is_ok());
+    }
+
+    #[test]
+    fn update_rejects_set_and_clear_time_zone_together() {
+        let result = Cli::try_parse_from([
+            "icalctl",
+            "update",
+            "EVENT-ID",
+            "--time-zone",
+            "Europe/Berlin",
+            "--clear-time-zone",
+        ]);
+
+        assert!(result.is_err());
     }
 }

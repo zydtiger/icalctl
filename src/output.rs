@@ -1,4 +1,5 @@
 use crate::models::{AlarmReport, CalendarReport, EventDraftReport, EventReport, JsonOutput};
+use chrono::DateTime;
 
 pub fn print_human_output(output: &JsonOutput) {
     match output {
@@ -32,6 +33,18 @@ fn print_dry_run(draft: &EventDraftReport) {
     }
     println!("title: {}", draft.title);
     println!("time: {} to {}", draft.start, draft.end);
+    if let (Some(start_input), Some(end_input)) = (&draft.start_input, &draft.end_input) {
+        println!("input time: {start_input} to {end_input}");
+    }
+    println!("UTC: {} to {}", draft.start_utc, draft.end_utc);
+    if let (Some(start), Some(end), Some(time_zone)) = (
+        &draft.start_in_event_time_zone,
+        &draft.end_in_event_time_zone,
+        &draft.time_zone,
+    ) {
+        println!("event time zone ({time_zone}): {start} to {end}");
+    }
+    println!("duration: {} seconds", draft.duration_seconds);
     println!("kind: {}", if draft.all_day { "all-day" } else { "timed" });
     println!("calendar: {} [{}]", draft.calendar, draft.calendar_id);
     if let Some(source) = &draft.calendar_source {
@@ -95,6 +108,18 @@ fn print_event_detail(event: &EventReport) {
     println!("{}", event.title);
     println!("id: {}", event.id);
     println!("time: {}", event_time_range(event));
+    if let (Some(start_input), Some(end_input)) = (&event.start_input, &event.end_input) {
+        println!("input time: {start_input} to {end_input}");
+    }
+    println!("UTC: {} to {}", event.start_utc, event.end_utc);
+    if let (Some(start), Some(end), Some(time_zone)) = (
+        &event.start_in_event_time_zone,
+        &event.end_in_event_time_zone,
+        &event.timezone,
+    ) {
+        println!("event time zone ({time_zone}): {start} to {end}");
+    }
+    println!("duration: {} seconds", event.duration_seconds);
 
     if let Some(calendar) = &event.calendar {
         println!("calendar: {calendar}");
@@ -152,14 +177,22 @@ pub(crate) fn alarm_label(alarm: &AlarmReport) -> String {
 }
 
 pub(crate) fn event_time_range(event: &EventReport) -> String {
+    let start_value = event
+        .start_in_event_time_zone
+        .as_deref()
+        .unwrap_or(&event.start);
+    let end_value = event
+        .end_in_event_time_zone
+        .as_deref()
+        .unwrap_or(&event.end);
     if event.all_day {
-        return format!("{} all-day", date_part(&event.start));
+        return format!("{} all-day", date_part(start_value));
     }
 
-    let start_date = date_part(&event.start);
-    let end_date = date_part(&event.end);
-    let start_time = time_part(&event.start);
-    let end_time = time_part(&event.end);
+    let start_date = date_part(start_value);
+    let end_date = date_part(end_value);
+    let start_time = time_with_offset(start_value);
+    let end_time = time_with_offset(end_value);
 
     if start_date == end_date {
         format!("{start_date} {start_time}-{end_time}")
@@ -172,8 +205,10 @@ fn date_part(value: &str) -> &str {
     value.get(0..10).unwrap_or(value)
 }
 
-fn time_part(value: &str) -> &str {
-    value.get(11..16).unwrap_or(value)
+fn time_with_offset(value: &str) -> String {
+    DateTime::parse_from_rfc3339(value)
+        .map(|datetime| datetime.format("%H:%M%:z").to_string())
+        .unwrap_or_else(|_| value.get(11..16).unwrap_or(value).to_string())
 }
 
 #[cfg(test)]
@@ -197,5 +232,11 @@ mod tests {
 
         assert_eq!(alarm_label(&before), "10 minutes before");
         assert_eq!(alarm_label(&after), "5 minutes after");
+    }
+
+    #[test]
+    fn time_format_includes_rfc3339_offset() {
+        assert_eq!(time_with_offset("2026-07-12T15:55:00+03:00"), "15:55+03:00");
+        assert_eq!(time_with_offset("2026-07-12T15:55:00+02:00"), "15:55+02:00");
     }
 }

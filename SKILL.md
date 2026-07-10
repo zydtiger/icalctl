@@ -25,6 +25,7 @@ cargo install --path .
 - Prefer exact `--calendar-id` selectors for agent writes and reads. Title-only selectors are acceptable only when the title is unique.
 - Use `icalctl default-calendar --json` before any workflow that intentionally relies on EventKit's implicit default target.
 - Prefer `--dry-run --json` to validate and preview add/update plans before asking for final write confirmation.
+- For timezone-less event inputs, `--time-zone <TZID>` controls parsing and stores the same single EventKit timezone. For offset-bearing or travel times, explicit offsets remain authoritative; verify input echoes, UTC fields, and `duration_seconds`.
 - Quote titles, calendar names, notes, locations, and URLs that contain spaces or shell metacharacters.
 - Use row numbers only immediately after a fresh `today`, `upcoming`, `list`, or `search`; otherwise use the exact EventKit id or rerun the list command.
 
@@ -102,6 +103,7 @@ The confirmation must include:
 - calendar id
 - event title
 - start and end date/time, including timezone assumptions
+- stored EventKit time zone, if any
 - whether it is all-day or timed
 - notes, location, URL, availability, and alarms if any
 
@@ -136,7 +138,13 @@ Accepted forms include:
 2026-07-07T09:30:00+08:00
 ```
 
-Date-only values use the local timezone. For range commands, date-only `--from` starts at local midnight, and date-only `--to` includes the whole day by internally ending at the next local midnight.
+Date-only values use the Mac's local timezone unless `add` or `update` supplies `--time-zone`, in which case their midnight boundaries use that IANA zone. For range commands, date-only `--from` starts at local midnight, and date-only `--to` includes the whole day by internally ending at the next local midnight.
+
+Offset-bearing inputs are absolute instants. Write and dry-run JSON preserves them as `start_input` and `end_input` and reports normalized UTC/local values plus `duration_seconds`. Human event times include their UTC offset.
+
+Datetime precedence is: no `--time-zone` plus timezone-less input uses Mac local time; no `--time-zone` plus an explicit offset uses that offset; `--time-zone` plus timezone-less input uses the named IANA zone; and `--time-zone` plus an explicit offset still uses that offset while storing the named zone for EventKit display. On update, omitting `--time-zone` means naive inputs use Mac local time even if the event already has timezone metadata; that stored metadata remains unchanged. Timezone-less values in DST gaps or overlaps are rejected, so use an explicit offset for an unambiguous instant. EventKit does not preserve separate start/end timezone names, so travel events should use offset-bearing start/end inputs and verify the echoed inputs and duration.
+
+Example: `2026-07-12T15:55:00+03:00` to `2026-07-12T15:55:00+02:00` is a one-hour event even though both clocks show `15:55`.
 
 For all-day events, pass date-only values with `--all-day`:
 
@@ -290,6 +298,7 @@ Options:
 - `--url <URL>`: event URL.
 - `--all-day`: mark the event as all-day.
 - `--availability <AVAILABILITY>`: one of `busy`, `free`, `tentative`, or `unavailable`.
+- `--time-zone <TZID>`: interpret timezone-less inputs in an IANA zone and store that zone on the event.
 - `--alarm-minutes-before <MINUTES>`: add a display alarm before the event. Can be passed more than once.
 - `--dry-run`: validate and print the resolved event draft without writing.
 - `--json`: print the created event as JSON.
@@ -332,6 +341,8 @@ Options:
 - `--all-day`: mark as all-day.
 - `--timed`: mark as timed.
 - `--availability <AVAILABILITY>`: one of `busy`, `free`, `tentative`, or `unavailable`.
+- `--time-zone <TZID>`: interpret timezone-less updated times in an IANA zone and store that zone.
+- `--clear-time-zone`: clear the stored event timezone.
 - `--add-alarm-minutes-before <MINUTES>`: add a display alarm before the event. Can be passed more than once.
 - `--dry-run`: validate and print the resulting event draft without writing.
 - `--json`: print the updated event as JSON.

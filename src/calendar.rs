@@ -1,9 +1,14 @@
 use crate::cache::resolve_event_ref;
 use crate::calendar_selector::{CalendarSelector, require_single_calendar, resolve_calendars};
 use crate::cli::{AvailabilityArg, Command, ReadCalendarSelectorArgs, WriteCalendarSelectorArgs};
-use crate::dates::{parse_end_datetime, parse_start_datetime, today_range};
+use crate::dates::{
+    datetime_in_time_zone, parse_end_datetime, parse_end_datetime_in_time_zone,
+    parse_start_datetime, parse_start_datetime_in_time_zone, today_range, utc_datetime,
+    validate_time_zone,
+};
 use crate::eventkit_bridge::{
-    create_event_in_calendar, move_event_to_calendar, validate_event_url,
+    create_event_in_calendar, update_event_calendar_metadata, validate_event_time_zone,
+    validate_event_url,
 };
 use crate::models::{
     AlarmReport, CalendarReport, CalendarSelection, DeletedReport, EventDraftReport, EventReport,
@@ -108,6 +113,7 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             url,
             all_day,
             availability,
+            time_zone,
             alarm_minutes_before,
             dry_run,
         } => {
@@ -121,6 +127,7 @@ pub fn run(command: Command) -> Result<JsonOutput> {
                 url,
                 all_day,
                 availability,
+                time_zone,
                 alarm_minutes_before,
                 dry_run,
             })?;
@@ -141,6 +148,8 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             all_day,
             timed,
             availability,
+            time_zone,
+            clear_time_zone,
             add_alarm_minutes_before,
             dry_run,
         } => {
@@ -159,6 +168,8 @@ pub fn run(command: Command) -> Result<JsonOutput> {
                 all_day,
                 timed,
                 availability,
+                time_zone,
+                clear_time_zone,
                 add_alarm_minutes_before,
                 dry_run,
             })?;
@@ -182,6 +193,7 @@ struct AddEventInput {
     url: Option<String>,
     all_day: bool,
     availability: Option<AvailabilityArg>,
+    time_zone: Option<String>,
     alarm_minutes_before: Vec<i64>,
     dry_run: bool,
 }
@@ -201,6 +213,8 @@ struct UpdateEventInput {
     all_day: bool,
     timed: bool,
     availability: Option<AvailabilityArg>,
+    time_zone: Option<String>,
+    clear_time_zone: bool,
     add_alarm_minutes_before: Vec<i64>,
     dry_run: bool,
 }
@@ -221,10 +235,14 @@ fn write_result_output(result: WriteEventResult) -> JsonOutput {
 }
 
 fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
-    let start = parse_start_datetime(&input.start)
+    if let Some(time_zone) = input.time_zone.as_deref() {
+        validate_time_zone(time_zone)?;
+        validate_event_time_zone(time_zone)?;
+    }
+    let start = parse_start_datetime_in_time_zone(&input.start, input.time_zone.as_deref())
         .with_context(|| format!("invalid --start: {}", input.start))?;
-    let end =
-        parse_end_datetime(&input.end).with_context(|| format!("invalid --end: {}", input.end))?;
+    let end = parse_end_datetime_in_time_zone(&input.end, input.time_zone.as_deref())
+        .with_context(|| format!("invalid --end: {}", input.end))?;
     ensure_valid_event_range(start, end)?;
     validate_alarm_minutes(&input.alarm_minutes_before)?;
     if let Some(url) = input.url.as_deref() {
@@ -240,12 +258,31 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
     if input.dry_run {
         let duplicate_warnings =
             duplicate_warnings(&events, &input.title, start, end, &target.identifier, None)?;
+        let start_in_event_time_zone = input
+            .time_zone
+            .as_deref()
+            .map(|time_zone| datetime_in_time_zone(start, time_zone))
+            .transpose()?;
+        let end_in_event_time_zone = input
+            .time_zone
+            .as_deref()
+            .map(|time_zone| datetime_in_time_zone(end, time_zone))
+            .transpose()?;
         return Ok(WriteEventResult::DryRun(Box::new(EventDraftReport {
             operation: "add".to_string(),
             event_id: None,
             title: input.title,
             start: start.to_rfc3339(),
             end: end.to_rfc3339(),
+            start_input: Some(input.start),
+            end_input: Some(input.end),
+            start_utc: utc_datetime(start),
+            end_utc: utc_datetime(end),
+            start_local: start.to_rfc3339(),
+            end_local: end.to_rfc3339(),
+            start_in_event_time_zone,
+            end_in_event_time_zone,
+            duration_seconds: (end - start).num_seconds(),
             all_day: input.all_day,
             timed: !input.all_day,
             calendar: target.title,
@@ -253,6 +290,7 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
             calendar_source: target.source,
             calendar_source_id: target.source_id,
             calendar_selection: Some(selection),
+            time_zone: input.time_zone,
             availability: availability
                 .map_or("default", availability_name)
                 .to_string(),
@@ -277,12 +315,14 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
         ..Default::default()
     };
 
-    let id = create_event_in_calendar(&draft, &target.identifier)
+    let id = create_event_in_calendar(&draft, &target.identifier, input.time_zone.as_deref())
         .context("failed to create event through EventKit")?;
 
     add_relative_alarms(&events, &id, &input.alarm_minutes_before)?;
     let mut report = event_report_with_alarms(&events, &id)?;
     report.calendar_selection = Some(selection);
+    report.start_input = Some(input.start);
+    report.end_input = Some(input.end);
     Ok(WriteEventResult::Written(Box::new(report)))
 }
 
@@ -304,16 +344,25 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
         )?)
     };
 
+    if let Some(time_zone) = input.time_zone.as_deref() {
+        validate_time_zone(time_zone)?;
+        validate_event_time_zone(time_zone)?;
+    }
+    // Parsing is controlled only by this invocation's --time-zone. Without
+    // the flag, naive inputs always mean the Mac's local time, even when the
+    // existing event already carries EventKit timezone metadata.
+    let parse_time_zone = input.time_zone.as_deref();
+
     let start = input
         .start
         .as_deref()
-        .map(parse_start_datetime)
+        .map(|value| parse_start_datetime_in_time_zone(value, parse_time_zone))
         .transpose()
         .with_context(|| format!("invalid --start for event {id}"))?;
     let end = input
         .end
         .as_deref()
-        .map(parse_end_datetime)
+        .map(|value| parse_end_datetime_in_time_zone(value, parse_time_zone))
         .transpose()
         .with_context(|| format!("invalid --end for event {id}"))?;
 
@@ -328,6 +377,7 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
     let notes = nullable_patch(input.notes.as_deref(), input.clear_notes);
     let location = nullable_patch(input.location.as_deref(), input.clear_location);
     let url = nullable_patch(input.url.as_deref(), input.clear_url);
+    let time_zone = nullable_patch(input.time_zone.as_deref(), input.clear_time_zone);
     let all_day = if input.all_day {
         Some(true)
     } else if input.timed {
@@ -348,7 +398,8 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
         || location.is_some()
         || url.is_some()
         || all_day.is_some()
-        || availability.is_some();
+        || availability.is_some()
+        || time_zone.is_some();
 
     if !has_patch && input.add_alarm_minutes_before.is_empty() {
         bail!("no update fields provided");
@@ -358,6 +409,10 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
         let effective_title = input.title.as_deref().unwrap_or(&current.title);
         let effective_all_day = all_day.unwrap_or(current.all_day);
         let effective_availability = availability.unwrap_or(current.availability);
+        let effective_time_zone = match time_zone {
+            Some(value) => value,
+            None => current.timezone.as_deref(),
+        };
         let existing_alarm_count = events
             .get_event_alarms(&id)
             .with_context(|| format!("failed to read alarms for event {id}"))?
@@ -370,6 +425,12 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
             &effective_calendar.identifier,
             Some(&id),
         )?;
+        let start_in_event_time_zone = effective_time_zone
+            .map(|time_zone| datetime_in_time_zone(effective_start, time_zone))
+            .transpose()?;
+        let end_in_event_time_zone = effective_time_zone
+            .map(|time_zone| datetime_in_time_zone(effective_end, time_zone))
+            .transpose()?;
 
         return Ok(WriteEventResult::DryRun(Box::new(EventDraftReport {
             operation: "update".to_string(),
@@ -377,6 +438,15 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
             title: effective_title.to_string(),
             start: effective_start.to_rfc3339(),
             end: effective_end.to_rfc3339(),
+            start_input: input.start,
+            end_input: input.end,
+            start_utc: utc_datetime(effective_start),
+            end_utc: utc_datetime(effective_end),
+            start_local: effective_start.to_rfc3339(),
+            end_local: effective_end.to_rfc3339(),
+            start_in_event_time_zone,
+            end_in_event_time_zone,
+            duration_seconds: (effective_end - effective_start).num_seconds(),
             all_day: effective_all_day,
             timed: !effective_all_day,
             calendar: effective_calendar.title.clone(),
@@ -384,6 +454,7 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
             calendar_source: effective_calendar.source.clone(),
             calendar_source_id: effective_calendar.source_id.clone(),
             calendar_selection: target.as_ref().map(|_| CalendarSelection::Explicit),
+            time_zone: effective_time_zone.map(str::to_string),
             availability: availability_name(effective_availability).to_string(),
             alarm_count: existing_alarm_count + input.add_alarm_minutes_before.len(),
             has_notes: patched_field_present(current.notes.as_deref(), notes),
@@ -421,17 +492,22 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
             .with_context(|| format!("failed to update event {id}"))?;
     }
 
-    let id = if let Some(target) = target {
-        move_event_to_calendar(&id, &target.identifier)
-            .with_context(|| format!("failed to move event {id}"))?
+    let id = if target.is_some() || time_zone.is_some() {
+        update_event_calendar_metadata(
+            &id,
+            target.as_ref().map(|target| target.identifier.as_str()),
+            time_zone,
+        )
+        .with_context(|| format!("failed to update calendar metadata for event {id}"))?
     } else {
         id
     };
 
     add_relative_alarms(&events, &id, &input.add_alarm_minutes_before)?;
-    Ok(WriteEventResult::Written(Box::new(
-        event_report_with_alarms(&events, &id)?,
-    )))
+    let mut report = event_report_with_alarms(&events, &id)?;
+    report.start_input = input.start;
+    report.end_input = input.end;
+    Ok(WriteEventResult::Written(Box::new(report)))
 }
 
 fn delete_event(reference: &str, force: bool) -> Result<DeletedReport> {
@@ -938,6 +1014,12 @@ mod tests {
     fn url_validation_runs_without_writing() {
         assert!(validate_event_url("https://example.com/event").is_ok());
         assert!(validate_event_url("https://exa mple.com/event").is_err());
+    }
+
+    #[test]
+    fn eventkit_time_zone_validation_runs_without_writing() {
+        assert!(validate_event_time_zone("Europe/Berlin").is_ok());
+        assert!(validate_event_time_zone("Mars/Olympus_Mons").is_err());
     }
 
     #[test]
