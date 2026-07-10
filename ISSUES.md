@@ -133,6 +133,8 @@ Acceptance checks:
 
 ## 8. Improve event output schema for automation
 
+**Status: Resolved.** Event JSON now exposes calendar account/type/writability provenance, normalized UTC/local/event-timezone instants, duration, availability, notes/URL presence, and loaded alarm counts; the schema stability contract is documented.
+
 Problem: event JSON is useful, but agents need more provenance and normalized time fields to verify writes without calling Swift/EventKit directly.
 
 Proposed changes:

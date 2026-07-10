@@ -206,6 +206,12 @@ fn print_event_detail(event: &EventReport) {
             println!("calendar source: {source}");
         }
     }
+    if let Some(calendar_type) = &event.calendar_type {
+        println!("calendar type: {calendar_type}");
+    }
+    if let Some(writable) = event.allows_calendar_modifications {
+        println!("calendar allows modifications: {writable}");
+    }
     if let Some(selection) = event.calendar_selection {
         let selection = match selection {
             crate::models::CalendarSelection::Explicit => "explicit",
@@ -226,6 +232,9 @@ fn print_event_detail(event: &EventReport) {
         for alarm in alarms {
             println!("- {}", alarm_label(alarm));
         }
+    }
+    if let Some(alarm_count) = event.alarm_count {
+        println!("alarm count: {alarm_count}");
     }
     if let Some(notes) = &event.notes {
         println!();

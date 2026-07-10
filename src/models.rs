@@ -112,12 +112,17 @@ pub struct EventReport {
     pub calendar_id: Option<String>,
     pub calendar_source: Option<String>,
     pub calendar_source_id: Option<String>,
+    pub calendar_type: Option<String>,
+    pub allows_calendar_modifications: Option<bool>,
     pub calendar_selection: Option<CalendarSelection>,
     pub location: Option<String>,
     pub notes: Option<String>,
     pub url: Option<String>,
     pub status: String,
     pub availability: String,
+    pub has_notes: bool,
+    pub has_url: bool,
+    pub alarm_count: Option<usize>,
     pub is_detached: bool,
     pub occurrence_date: Option<String>,
     pub creation_date: Option<String>,
@@ -274,12 +279,17 @@ impl From<&EventItem> for EventReport {
             calendar_id: event.calendar_id.clone(),
             calendar_source: None,
             calendar_source_id: None,
+            calendar_type: None,
+            allows_calendar_modifications: None,
             calendar_selection: None,
             location: event.location.clone(),
             notes: event.notes.clone(),
             url: event.URL.clone(),
             status: format!("{:?}", event.status),
             availability: format!("{:?}", event.availability),
+            has_notes: event.notes.is_some(),
+            has_url: event.URL.is_some(),
+            alarm_count: None,
             is_detached: event.is_detached,
             occurrence_date: event.occurrence_date.map(|value| value.to_rfc3339()),
             creation_date: event.creation_date.map(|value| value.to_rfc3339()),
@@ -426,14 +436,14 @@ mod tests {
         let event = EventItem {
             identifier: "EVENT-1".to_string(),
             title: "Flight".to_string(),
-            notes: None,
+            notes: Some("Flight notes".to_string()),
             location: None,
             start_date: parse_start_datetime("2026-07-12T15:55:00+03:00").unwrap(),
             end_date: parse_end_datetime("2026-07-12T15:55:00+02:00").unwrap(),
             all_day: false,
             calendar_title: Some("Travel".to_string()),
             calendar_id: Some("CAL-1".to_string()),
-            URL: None,
+            URL: Some("https://example.com/flight".to_string()),
             availability: EventAvailability::Busy,
             status: EventStatus::Confirmed,
             is_detached: false,
@@ -451,6 +461,9 @@ mod tests {
         let report = EventReport::from(&event);
 
         assert_eq!(report.duration_seconds, 3600);
+        assert!(report.has_notes);
+        assert!(report.has_url);
+        assert_eq!(report.alarm_count, None);
         assert_eq!(report.start_utc, "2026-07-12T12:55:00+00:00");
         assert_eq!(report.end_utc, "2026-07-12T13:55:00+00:00");
         assert_eq!(

@@ -176,6 +176,11 @@ icalctl add "Meeting" --start 2026-07-07T09:00 --end 2026-07-07T09:30 --json
 ```
 
 Use JSON for calendar-selection analysis, event id extraction, and scriptable workflows.
+Event JSON includes calendar source/type/writability, normalized UTC and local
+instants, duration, availability, and notes/URL presence. Detail and live write
+responses include `alarm_count`; list responses use null when alarms were not
+loaded. Dispatch on the top-level `type` and tolerate additive fields in the
+documented schema-generation-1 contract.
 
 ## Commands
 

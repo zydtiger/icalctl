@@ -90,12 +90,8 @@ pub fn run(command: Command) -> Result<JsonOutput> {
         Command::Show { id } => {
             let id = resolve_event_ref(&id)?;
             let events = authorized_events_manager()?;
-            let event = events
-                .get_event(&id)
-                .with_context(|| format!("failed to show event {id}"))?;
-            let calendars = list_calendars(&events)?;
             Ok(JsonOutput::Event {
-                event: Box::new(event_report(&event, &calendars)),
+                event: Box::new(event_report_with_alarms(&events, &id)?),
             })
         }
         Command::Search {
@@ -824,7 +820,7 @@ fn event_report_with_alarms(events: &EventsManager, id: &str) -> Result<EventRep
     let event = events
         .get_event(id)
         .with_context(|| format!("failed to reload event {id}"))?;
-    let alarms = events
+    let alarms: Vec<AlarmReport> = events
         .get_event_alarms(id)
         .with_context(|| format!("failed to read alarms for event {id}"))?
         .iter()
@@ -832,6 +828,7 @@ fn event_report_with_alarms(events: &EventsManager, id: &str) -> Result<EventRep
         .collect();
     let calendars = list_calendars(events)?;
     let mut report = event_report(&event, &calendars);
+    report.alarm_count = Some(alarms.len());
     report.alarms = Some(alarms);
     Ok(report)
 }
@@ -930,6 +927,8 @@ fn event_report(event: &EventItem, calendars: &[CalendarInfo]) -> EventReport {
     {
         report.calendar_source = calendar.source.clone();
         report.calendar_source_id = calendar.source_id.clone();
+        report.calendar_type = Some(format!("{:?}", calendar.calendar_type));
+        report.allows_calendar_modifications = Some(calendar.allows_modifications);
     }
     report
 }

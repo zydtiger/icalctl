@@ -213,12 +213,22 @@ calendar directly, including its id, source, type, and writability.
 
 Event JSON includes the selected calendar's title, EventKit id, source title,
 and source id as `calendar`, `calendar_id`, `calendar_source`, and
-`calendar_source_id`. A successful `add --json` also reports
+`calendar_source_id`. It also reports `calendar_type`,
+`allows_calendar_modifications`, normalized UTC/local instants,
+`duration_seconds`, availability, and `has_notes`/`has_url`. Detail and live
+write responses load alarms and include `alarm_count`; list responses use null
+when alarms were not loaded. A successful `add --json` also reports
 `calendar_selection` as `explicit` or `eventkit_default`.
 
 Event read-back JSON always includes UTC/local timestamps and duration. When
 EventKit reports an item timezone, it also includes
 `start_in_event_time_zone` and `end_in_event_time_zone`.
+
+The current JSON contract is schema generation 1. Consumers should dispatch on
+the top-level `type`, treat documented fields as stable, and tolerate additive
+fields. A removal, rename, or semantic change requires an explicitly documented
+schema-generation change; null means the value was unavailable or deliberately
+not loaded, not a fabricated default.
 
 ## Calendar Selection
 
