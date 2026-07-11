@@ -217,7 +217,7 @@ Acceptance checks:
 
 ## 13. Add first-class Apple Reminders support
 
-**Status: In progress.** Phases 1 through 3 are complete; Issue 13 remains open
+**Status: In progress.** Phases 1 through 4 are complete; Issue 13 remains open
 until all five phases are complete.
 
 Implementation phases:
@@ -229,7 +229,7 @@ Implementation phases:
   handling, date-only/timed due values, priority, timed-due notifications, and
   agent confirmation rules.
 - [x] Phase 3: update, completion/uncompletion, list moves, and delete.
-- [ ] Phase 4: absolute/custom alarms, recurrence, geofences, and Location diagnostics.
+- [x] Phase 4: absolute alarms, recurrence, geofences, and Location diagnostics.
 - [ ] Phase 5: structured JSON input, batch creation, guarded integration tests,
   documentation hardening, and final Issue 13 resolution.
 

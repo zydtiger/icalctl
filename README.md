@@ -255,7 +255,10 @@ List/search responses deliberately leave alarm and recurrence counts null;
 Reminder creation previews use `reminder_dry_run` with `would_write: false`,
 the exact resolved list and source ids, list-selection provenance, date inputs,
 priority, field presence, planned notifications, duplicate policy, and planned
-operation. Lifecycle previews use `reminder_mutation_dry_run` with before/result
+operation. `planned_alarms` is the complete preview collection for due-relative,
+arbitrary absolute, and geofence alarms; legacy `notifications` contains only
+due-relative time notifications. The preview also reports the single recurrence
+rule when supplied. Lifecycle previews use `reminder_mutation_dry_run` with before/result
 reminder objects and `changed_fields`; successful deletion uses
 `reminder_deleted` with the deleted reminder and list ids.
 
@@ -562,6 +565,61 @@ undated identities always remain exact. When notification flags are supplied
 with `--if-exists update`, they replace existing alarms; omission preserves
 existing alarms.
 
+Add arbitrary absolute notification instants independently of the due value
+with repeatable offset-bearing `--notify-at` values:
+
+```sh
+icalctl reminders add "Prepare documents" \
+  --list-id LIST_ID \
+  --due 2026-07-15 \
+  --notify-at 2026-07-14T09:00:00+03:00 \
+  --dry-run --json
+```
+
+Add one arrival or departure geofence alarm by supplying the complete location
+tuple. Coordinates and radius are never inferred from the title:
+
+```sh
+icalctl reminders add "Collect package" \
+  --list-id LIST_ID \
+  --geofence-title "Post office" \
+  --geofence-latitude 60.1699 \
+  --geofence-longitude 24.9384 \
+  --geofence-radius-meters 150 \
+  --geofence-proximity arrive \
+  --dry-run --json
+```
+
+Latitude must be from -90 through 90, longitude from -180 through 180, and
+radius must be positive. `icalctl doctor --json` reports Location Services,
+authorization, and the embedded usage description for diagnostics. These
+statuses do not block an explicit-coordinate geofence write: icalctl constructs
+the EventKit location without reading the device's current location. Actual
+trigger delivery remains controlled by macOS and Reminders settings.
+
+An ignored, explicit-opt-in EventKit integration test can create, read back,
+clear, and delete an advanced reminder only in an exact writable
+`icalctl Test` list. Set `ICALCTL_RUN_REMINDER_EVENTKIT_TESTS=1` and
+`ICALCTL_TEST_REMINDER_LIST_ID` before running that single ignored test; normal
+test runs never write Reminders data.
+
+Create one simple recurrence rule anchored by a due or start date:
+
+```sh
+icalctl reminders add "Review budget" \
+  --list-id LIST_ID \
+  --due 2026-07-15T09:00:00+03:00 \
+  --repeat monthly \
+  --repeat-interval 1 \
+  --repeat-count 12 \
+  --dry-run --json
+```
+
+`--repeat` accepts `daily`, `weekly`, `monthly`, or `yearly`.
+`--repeat-interval` defaults to 1. Use either positive `--repeat-count` or an
+offset-bearing RFC3339 `--repeat-until`, not both. The simple rule follows the
+due/start anchor; advanced BYDAY/BYMONTH patterns are not exposed.
+
 If all list selectors are omitted, EventKit's default reminder list is used.
 Inspect `reminders default-list --json` first and still confirm its exact title
 and id. A dry run does not replace user confirmation. Only after confirmation,
@@ -607,10 +665,16 @@ Delete prompts for the word `delete` unless `--force` is supplied:
 icalctl reminders delete REMINDER_ID
 ```
 
+Supplying any notification/geofence option to `reminders update` replaces the
+entire existing alarm collection. Use `--clear-notifications` to remove all
+alarms. Supplying `--repeat` replaces the recurrence rule; use
+`--clear-recurrence` to remove it. Omission preserves existing alarms and
+recurrence.
+
 Before any live update, move, completion change, or deletion, inspect the
 exact reminder and target list, preview where supported, and obtain explicit
 confirmation. Update currently preserves reminder alarms and recurrence rules;
-their mutation belongs to the advanced reminders phase.
+their explicit replacement or clear options are the only exception.
 
 The adapter uses only Apple's public EventKit API. Features that Reminders.app
 does not expose publicly through EventKit—flags, tags, sections, subtasks,

@@ -28,5 +28,7 @@
 	<string>icalctl needs full Reminders access to list, create, update, complete, and delete reminders in the local macOS Reminders store.</string>
 	<key>NSRemindersUsageDescription</key>
 	<string>icalctl needs Reminders access to list, create, update, complete, and delete reminders in the local macOS Reminders store.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>icalctl uses Location Services diagnostics when configuring explicit-coordinate arrival and departure alarms.</string>
 </dict>
 </plist>

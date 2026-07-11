@@ -126,6 +126,56 @@ pub struct ReminderReadFilterArgs {
     pub due_to: Option<String>,
 }
 
+#[derive(Debug, Args)]
+pub struct ReminderAdvancedScheduleArgs {
+    /// Notify at an arbitrary RFC3339 instant with an explicit UTC offset. Repeatable.
+    #[arg(long = "notify-at", value_name = "RFC3339")]
+    pub notify_at: Vec<String>,
+
+    /// Label for a single arrival/departure geofence alarm.
+    #[arg(
+        long = "geofence-title",
+        requires_all = ["geofence_latitude", "geofence_longitude", "geofence_radius_meters", "geofence_proximity"]
+    )]
+    pub geofence_title: Option<String>,
+
+    /// Geofence latitude from -90 through 90.
+    #[arg(long = "geofence-latitude", requires = "geofence_title")]
+    pub geofence_latitude: Option<f64>,
+
+    /// Geofence longitude from -180 through 180.
+    #[arg(long = "geofence-longitude", requires = "geofence_title")]
+    pub geofence_longitude: Option<f64>,
+
+    /// Positive geofence radius in meters.
+    #[arg(long = "geofence-radius-meters", requires = "geofence_title")]
+    pub geofence_radius_meters: Option<f64>,
+
+    /// Trigger when arriving at or leaving the geofence.
+    #[arg(long = "geofence-proximity", value_enum, requires = "geofence_title")]
+    pub geofence_proximity: Option<ReminderGeofenceProximityArg>,
+
+    /// Simple recurrence frequency.
+    #[arg(long = "repeat", value_enum)]
+    pub repeat: Option<ReminderRepeatArg>,
+
+    /// Positive recurrence interval; defaults to 1 when --repeat is supplied.
+    #[arg(long = "repeat-interval", requires = "repeat")]
+    pub repeat_interval: Option<usize>,
+
+    /// Stop after this positive number of occurrences.
+    #[arg(
+        long = "repeat-count",
+        requires = "repeat",
+        conflicts_with = "repeat_until"
+    )]
+    pub repeat_count: Option<usize>,
+
+    /// Stop after an RFC3339 instant with an explicit UTC offset.
+    #[arg(long = "repeat-until", value_name = "RFC3339", requires = "repeat")]
+    pub repeat_until: Option<String>,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Print EventKit Calendar authorization status.
@@ -467,6 +517,9 @@ pub enum RemindersCommand {
         #[arg(long = "notify-minutes-before", value_name = "MINUTES")]
         notify_minutes_before: Vec<i64>,
 
+        #[command(flatten)]
+        schedule: ReminderAdvancedScheduleArgs,
+
         /// Behavior when a matching reminder already exists.
         #[arg(long = "if-exists", value_enum, default_value_t = IfExistsArg::Error)]
         if_exists: IfExistsArg,
@@ -551,6 +604,25 @@ pub enum RemindersCommand {
         /// Replace reminder priority; use none to clear it.
         #[arg(long, value_enum)]
         priority: Option<ReminderPriorityArg>,
+
+        /// Notify exactly at the resulting timed due instant.
+        #[arg(long)]
+        notify_at_due: bool,
+
+        /// Notify N minutes before the resulting timed due instant. Repeatable.
+        #[arg(long = "notify-minutes-before", value_name = "MINUTES")]
+        notify_minutes_before: Vec<i64>,
+
+        #[command(flatten)]
+        schedule: ReminderAdvancedScheduleArgs,
+
+        /// Remove every existing time and location alarm.
+        #[arg(long, conflicts_with_all = ["notify_at_due", "notify_minutes_before", "notify_at", "geofence_title"])]
+        clear_notifications: bool,
+
+        /// Remove the existing recurrence rule.
+        #[arg(long, conflicts_with = "repeat")]
+        clear_recurrence: bool,
 
         /// Validate and print the patch without writing.
         #[arg(long)]
@@ -707,6 +779,20 @@ pub enum ReminderPriorityArg {
     Low,
     Medium,
     High,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ReminderGeofenceProximityArg {
+    Arrive,
+    Leave,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ReminderRepeatArg {
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
 }
 
 pub fn print_completions(shell: Shell) {
@@ -1450,6 +1536,105 @@ mod tests {
                 "--notes",
                 "text",
                 "--clear-notes",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn reminder_add_parses_absolute_geofence_and_recurrence_options() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "reminders",
+            "add",
+            "Visit office",
+            "--due",
+            "2026-07-15T09:00:00+03:00",
+            "--notify-at",
+            "2026-07-15T07:00:00+03:00",
+            "--geofence-title",
+            "Office",
+            "--geofence-latitude",
+            "60.1699",
+            "--geofence-longitude",
+            "24.9384",
+            "--geofence-radius-meters",
+            "150",
+            "--geofence-proximity",
+            "arrive",
+            "--repeat",
+            "weekly",
+            "--repeat-interval",
+            "2",
+            "--repeat-count",
+            "6",
+            "--dry-run",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Reminders {
+                command: RemindersCommand::Add {
+                    schedule: ReminderAdvancedScheduleArgs {
+                        notify_at,
+                        geofence_title: Some(title),
+                        geofence_proximity: Some(ReminderGeofenceProximityArg::Arrive),
+                        repeat: Some(ReminderRepeatArg::Weekly),
+                        repeat_interval: Some(2),
+                        repeat_count: Some(6),
+                        ..
+                    },
+                    dry_run: true,
+                    ..
+                }
+            } if notify_at == ["2026-07-15T07:00:00+03:00"] && title == "Office"
+        ));
+    }
+
+    #[test]
+    fn reminder_update_parses_schedule_clear_flags_and_rejects_partial_geofence() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "reminders",
+            "update",
+            "ID",
+            "--clear-notifications",
+            "--clear-recurrence",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Reminders {
+                command: RemindersCommand::Update {
+                    clear_notifications: true,
+                    clear_recurrence: true,
+                    dry_run: true,
+                    ..
+                }
+            }
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "icalctl",
+                "reminders",
+                "add",
+                "Task",
+                "--geofence-title",
+                "Office",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "icalctl",
+                "reminders",
+                "update",
+                "ID",
+                "--clear-notifications",
+                "--notify-at",
+                "2026-07-15T09:00:00+03:00",
             ])
             .is_err()
         );

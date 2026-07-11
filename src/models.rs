@@ -72,12 +72,15 @@ pub struct StatusReport {
 pub struct DoctorReport {
     pub authorization: String,
     pub reminders_authorization: String,
+    pub location_authorization: String,
+    pub location_services_enabled: bool,
     pub process: ProcessReport,
     pub info_plist: InfoPlistReport,
     pub recommended_command: String,
     pub recommended_reminders_command: String,
     pub remediation: Vec<String>,
     pub reminders_remediation: Vec<String>,
+    pub location_remediation: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -96,6 +99,7 @@ pub struct InfoPlistReport {
     pub has_write_only_usage_description: bool,
     pub has_reminders_full_access_usage_description: bool,
     pub has_reminders_legacy_usage_description: bool,
+    pub has_location_usage_description: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -142,6 +146,8 @@ pub struct ReminderDateReport {
 pub struct ReminderStructuredLocationReport {
     pub title: Option<String>,
     pub radius_meters: f64,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -230,9 +236,22 @@ pub struct ReminderDraftReport {
     pub has_url: bool,
     pub notification_count: usize,
     pub notifications: Vec<ReminderNotificationReport>,
+    pub planned_alarm_count: usize,
+    pub planned_alarms: Vec<ReminderPlannedAlarmReport>,
+    pub recurrence: Option<ReminderRecurrenceReport>,
     pub if_exists: String,
     pub duplicate_window_seconds: i64,
     pub duplicate_warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ReminderPlannedAlarmReport {
+    pub kind: String,
+    pub input: Option<String>,
+    pub absolute_utc: Option<String>,
+    pub minutes_before_due: Option<i64>,
+    pub proximity: Option<String>,
+    pub structured_location: Option<ReminderStructuredLocationReport>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

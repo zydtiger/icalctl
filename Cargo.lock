@@ -301,6 +301,7 @@ dependencies = [
  "embed_plist",
  "eventkit-rs",
  "objc2",
+ "objc2-core-location",
  "objc2-event-kit",
  "objc2-foundation",
  "serde",
@@ -378,6 +379,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-contacts"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b034b578389f89a85c055eacc8d8b368be5f04a6c1b07f672bf3aec21d0ef621"
+dependencies = [
+ "objc2",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "objc2-core-foundation"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -410,7 +421,10 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca347214e24bc973fc025fd0d36ebb179ff30536ed1f80252706db19ee452009"
 dependencies = [
+ "block2",
+ "dispatch2",
  "objc2",
+ "objc2-contacts",
  "objc2-foundation",
 ]
 

@@ -1,6 +1,7 @@
 use crate::cache::resolve_reminder_ref;
 use crate::cli::{
-    IfExistsArg, ReadReminderListSelectorArgs, ReminderPriorityArg, ReminderReadFilterArgs,
+    IfExistsArg, ReadReminderListSelectorArgs, ReminderAdvancedScheduleArgs,
+    ReminderGeofenceProximityArg, ReminderPriorityArg, ReminderReadFilterArgs, ReminderRepeatArg,
     ReminderStateArg, RemindersCommand, WriteReminderListSelectorArgs,
 };
 use crate::dates::{
@@ -9,20 +10,23 @@ use crate::dates::{
 use crate::models::{
     JsonOutput, ReminderAlarmReport, ReminderDateKind, ReminderDateReport, ReminderDeletedReport,
     ReminderDraftReport, ReminderListReport, ReminderListSelection, ReminderMutationDraftReport,
-    ReminderNotificationReport, ReminderPriority, ReminderRecurrenceEndReport,
-    ReminderRecurrenceReport, ReminderReport, ReminderStructuredLocationReport, StatusReport,
+    ReminderNotificationReport, ReminderPlannedAlarmReport, ReminderPriority,
+    ReminderRecurrenceEndReport, ReminderRecurrenceReport, ReminderReport,
+    ReminderStructuredLocationReport, StatusReport,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use block2::RcBlock;
 use chrono::{
     DateTime, Datelike, FixedOffset, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc,
 };
-use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
+use objc2::{AnyThread, Message};
+use objc2_core_location::CLLocation;
 use objc2_event_kit::{
     EKAlarm, EKAlarmProximity, EKAlarmType, EKAuthorizationStatus, EKCalendar, EKCalendarType,
-    EKEntityType, EKEventStore, EKRecurrenceFrequency, EKRecurrenceRule, EKReminder, EKSourceType,
+    EKEntityType, EKEventStore, EKRecurrenceEnd, EKRecurrenceFrequency, EKRecurrenceRule,
+    EKReminder, EKSourceType, EKStructuredLocation,
 };
 use objc2_foundation::{
     NSArray, NSCalendar, NSCalendarIdentifierGregorian, NSDate, NSDateComponentUndefined,
@@ -108,6 +112,7 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
             priority,
             notify_at_due,
             notify_minutes_before,
+            schedule,
             if_exists,
             duplicate_window_seconds,
             dry_run,
@@ -126,6 +131,7 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
                 priority,
                 notify_at_due,
                 notify_minutes_before,
+                schedule,
                 if_exists,
                 duplicate_window_seconds,
                 dry_run,
@@ -149,6 +155,11 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
             location,
             clear_location,
             priority,
+            notify_at_due,
+            notify_minutes_before,
+            schedule,
+            clear_notifications,
+            clear_recurrence,
             dry_run,
         } => update_reminder(
             store,
@@ -170,6 +181,11 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
                 location,
                 clear_location,
                 priority,
+                notify_at_due,
+                notify_minutes_before,
+                schedule,
+                clear_notifications,
+                clear_recurrence,
                 dry_run,
             },
         ),
@@ -196,6 +212,7 @@ struct AddReminderCommand {
     priority: Option<ReminderPriorityArg>,
     notify_at_due: bool,
     notify_minutes_before: Vec<i64>,
+    schedule: ReminderAdvancedScheduleArgs,
     if_exists: IfExistsArg,
     duplicate_window_seconds: i64,
     dry_run: bool,
@@ -212,6 +229,8 @@ struct ReminderSaveDraft {
     url: Option<String>,
     priority_value: usize,
     notifications: Vec<ParsedReminderNotification>,
+    geofence: Option<ParsedReminderGeofence>,
+    recurrence: Option<ParsedReminderRecurrence>,
 }
 
 #[derive(Clone, Default)]
@@ -222,6 +241,8 @@ struct ReminderAddPatch {
     url: Option<String>,
     priority_value: Option<usize>,
     notifications: Option<Vec<ParsedReminderNotification>>,
+    geofence: Option<Option<ParsedReminderGeofence>>,
+    recurrence: Option<ParsedReminderRecurrence>,
 }
 
 struct UpdateReminderCommand {
@@ -242,6 +263,11 @@ struct UpdateReminderCommand {
     location: Option<String>,
     clear_location: bool,
     priority: Option<ReminderPriorityArg>,
+    notify_at_due: bool,
+    notify_minutes_before: Vec<i64>,
+    schedule: ReminderAdvancedScheduleArgs,
+    clear_notifications: bool,
+    clear_recurrence: bool,
     dry_run: bool,
 }
 
@@ -255,12 +281,33 @@ struct ReminderLifecyclePatch {
     location: Option<Option<String>>,
     url: Option<Option<String>>,
     priority_value: Option<usize>,
+    notifications: Option<Vec<ParsedReminderNotification>>,
+    geofence: Option<Option<ParsedReminderGeofence>>,
+    recurrence: Option<Option<ParsedReminderRecurrence>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct ParsedReminderNotification {
-    minutes_before: i64,
+    minutes_before: Option<i64>,
+    input: Option<String>,
     absolute_utc: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedReminderGeofence {
+    title: String,
+    latitude: f64,
+    longitude: f64,
+    radius_meters: f64,
+    proximity: ReminderGeofenceProximityArg,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedReminderRecurrence {
+    frequency: ReminderRepeatArg,
+    interval: usize,
+    count: Option<usize>,
+    until_utc: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone)]
@@ -327,12 +374,18 @@ fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Resu
     {
         bail!("--time-zone requires at least one timed --due or --start value");
     }
-    let notifications_supplied = command.notify_at_due || !command.notify_minutes_before.is_empty();
-    let notifications = build_notifications(
-        due.as_ref(),
+    let notifications_supplied = command.notify_at_due
+        || !command.notify_minutes_before.is_empty()
+        || !command.schedule.notify_at.is_empty()
+        || command.schedule.geofence_title.is_some();
+    let mut notifications = build_notifications(
+        due.as_ref().map(|value| &value.report),
         command.notify_at_due,
         &command.notify_minutes_before,
     )?;
+    notifications.extend(parse_absolute_notifications(&command.schedule.notify_at)?);
+    let geofence = parse_geofence(&command.schedule)?;
+    let recurrence = parse_recurrence(&command.schedule)?;
 
     let lists = store.lists()?;
     let default_list = if write_list_selector_is_empty(&command.list_selector) {
@@ -355,6 +408,8 @@ fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Resu
         url: command.url.clone(),
         priority_value,
         notifications: notifications.clone(),
+        geofence: geofence.clone(),
+        recurrence: recurrence.clone(),
     };
     let patch = ReminderAddPatch {
         start: start.clone(),
@@ -363,6 +418,8 @@ fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Resu
         url: command.url.clone(),
         priority_value: priority_arg.map(priority_arg_value),
         notifications: notifications_supplied.then_some(notifications.clone()),
+        geofence: notifications_supplied.then_some(geofence.clone()),
+        recurrence: recurrence.clone(),
     };
 
     let existing = store.fetch(std::slice::from_ref(&list.id))?;
@@ -402,6 +459,29 @@ fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Resu
         (Some(_), IfExistsArg::Update) => "update",
         _ => "create",
     };
+    if let Some(recurrence) = &recurrence {
+        let effective_anchor = if operation == "update" {
+            matched
+                .as_ref()
+                .and_then(|reminder| reminder.due.as_ref())
+                .or_else(|| start.as_ref().map(|value| &value.report))
+                .or_else(|| {
+                    matched
+                        .as_ref()
+                        .and_then(|reminder| reminder.start.as_ref())
+                })
+        } else {
+            due.as_ref()
+                .map(|value| &value.report)
+                .or_else(|| start.as_ref().map(|value| &value.report))
+        };
+        let effective_anchor =
+            effective_anchor.context("recurrence requires a due or start date")?;
+        validate_recurrence_end_after_anchor(
+            &recurrence_report_from_parsed(recurrence),
+            Some(effective_anchor),
+        )?;
+    }
     let duplicate_warnings = (command.duplicate_window_seconds > 0)
         .then(|| {
             format!(
@@ -429,8 +509,17 @@ fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Resu
         has_notes: notes.is_some(),
         has_location: command.location.is_some(),
         has_url: command.url.is_some(),
-        notification_count: notifications.len(),
-        notifications: notification_reports(&notifications, due.as_ref()),
+        notification_count: notifications
+            .iter()
+            .filter(|notification| notification.minutes_before.is_some())
+            .count(),
+        notifications: notification_reports(
+            &notifications,
+            due.as_ref().map(|value| &value.report),
+        ),
+        planned_alarm_count: notifications.len() + usize::from(geofence.is_some()),
+        planned_alarms: planned_alarm_reports(&notifications, geofence.as_ref()),
+        recurrence: recurrence.as_ref().map(recurrence_report_from_parsed),
         if_exists: if_exists_name(command.if_exists).to_string(),
         duplicate_window_seconds: command.duplicate_window_seconds,
         duplicate_warnings,
@@ -559,6 +648,59 @@ fn update_reminder(
             .any(|value| value.kind == ReminderDateKind::Datetime);
         if !has_timed_value {
             bail!("--time-zone and --clear-time-zone require a timed due or start value");
+        }
+    }
+
+    let alarm_flags_supplied = command.notify_at_due
+        || !command.notify_minutes_before.is_empty()
+        || !command.schedule.notify_at.is_empty()
+        || command.schedule.geofence_title.is_some();
+    if command.clear_notifications && alarm_flags_supplied {
+        bail!("--clear-notifications conflicts with notification and geofence options");
+    }
+    if command.clear_notifications {
+        patch.notifications = Some(Vec::new());
+        patch.geofence = Some(None);
+    } else if alarm_flags_supplied {
+        let result = preview_lifecycle_patch(&before, &patch, moved_list.as_ref());
+        let mut notifications = build_notifications(
+            result.due.as_ref(),
+            command.notify_at_due,
+            &command.notify_minutes_before,
+        )?;
+        notifications.extend(parse_absolute_notifications(&command.schedule.notify_at)?);
+        let geofence = parse_geofence(&command.schedule)?;
+        patch.notifications = Some(notifications);
+        patch.geofence = Some(geofence);
+    }
+
+    if command.clear_recurrence && command.schedule.repeat.is_some() {
+        bail!("--clear-recurrence conflicts with --repeat");
+    }
+    if command.clear_recurrence {
+        patch.recurrence = Some(None);
+    } else if let Some(recurrence) = parse_recurrence(&command.schedule)? {
+        patch.recurrence = Some(Some(recurrence));
+    }
+
+    let final_preview = preview_lifecycle_patch(&before, &patch, moved_list.as_ref());
+    let recurrence_rules = match &patch.recurrence {
+        Some(Some(recurrence)) => vec![recurrence_report_from_parsed(recurrence)],
+        Some(None) => Vec::new(),
+        None => before.recurrence_rules.clone().unwrap_or_default(),
+    };
+    let recurrence_remains = !recurrence_rules.is_empty()
+        || (patch.recurrence.is_none() && before.recurrence_count.unwrap_or_default() > 0);
+    if recurrence_remains {
+        let anchor = final_preview
+            .due
+            .as_ref()
+            .or(final_preview.start.as_ref())
+            .context(
+                "recurrence requires a due or start date; clear recurrence when removing its final anchor",
+            )?;
+        for recurrence in &recurrence_rules {
+            validate_recurrence_end_after_anchor(recurrence, Some(anchor))?;
         }
     }
 
@@ -738,6 +880,11 @@ fn lifecycle_changed_fields(patch: &ReminderLifecyclePatch) -> Vec<String> {
         (patch.location.is_some(), "location"),
         (patch.url.is_some(), "url"),
         (patch.priority_value.is_some(), "priority"),
+        (
+            patch.notifications.is_some() || patch.geofence.is_some(),
+            "alarms",
+        ),
+        (patch.recurrence.is_some(), "recurrence"),
     ]
     .into_iter()
     .filter(|(changed, _)| *changed)
@@ -786,7 +933,54 @@ fn preview_lifecycle_patch(
         result.priority_value = priority;
         result.priority = priority_name(priority);
     }
+    if patch.notifications.is_some() || patch.geofence.is_some() {
+        let notifications = patch.notifications.as_deref().unwrap_or_default();
+        let geofence = patch.geofence.as_ref().and_then(Option::as_ref);
+        let alarms = alarm_reports_from_parsed(notifications, geofence);
+        result.alarm_count = Some(alarms.len());
+        result.alarms = Some(alarms);
+    }
+    if let Some(recurrence) = &patch.recurrence {
+        let rules = recurrence
+            .as_ref()
+            .map(recurrence_report_from_parsed)
+            .into_iter()
+            .collect::<Vec<_>>();
+        result.recurrence_count = Some(rules.len());
+        result.recurrence_rules = Some(rules);
+    }
     result
+}
+
+fn alarm_reports_from_parsed(
+    notifications: &[ParsedReminderNotification],
+    geofence: Option<&ParsedReminderGeofence>,
+) -> Vec<ReminderAlarmReport> {
+    let mut alarms = notifications
+        .iter()
+        .map(|notification| ReminderAlarmReport {
+            relative_offset_seconds: None,
+            absolute_date: Some(notification.absolute_utc.to_rfc3339()),
+            proximity: "none".to_string(),
+            alarm_type: "display".to_string(),
+            structured_location: None,
+        })
+        .collect::<Vec<_>>();
+    if let Some(geofence) = geofence {
+        alarms.push(ReminderAlarmReport {
+            relative_offset_seconds: None,
+            absolute_date: None,
+            proximity: geofence_proximity_name(geofence.proximity).to_string(),
+            alarm_type: "display".to_string(),
+            structured_location: Some(ReminderStructuredLocationReport {
+                title: Some(geofence.title.clone()),
+                radius_meters: geofence.radius_meters,
+                latitude: Some(geofence.latitude),
+                longitude: Some(geofence.longitude),
+            }),
+        });
+    }
+    alarms
 }
 
 fn clear_parsed_time_zone(value: ParsedReminderDate) -> Result<ParsedReminderDate> {
@@ -1016,7 +1210,7 @@ fn timed_reminder_date(
 }
 
 fn build_notifications(
-    due: Option<&ParsedReminderDate>,
+    due: Option<&ReminderDateReport>,
     notify_at_due: bool,
     notify_minutes_before: &[i64],
 ) -> Result<Vec<ParsedReminderNotification>> {
@@ -1024,11 +1218,10 @@ fn build_notifications(
         return Ok(Vec::new());
     }
     let due = due.context("notification flags require a timed --due value")?;
-    if due.report.kind != ReminderDateKind::Datetime {
+    if due.kind != ReminderDateKind::Datetime {
         bail!("notification flags require a timed --due value, not a date-only due value");
     }
     let due_utc = due
-        .report
         .utc
         .as_deref()
         .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
@@ -1054,27 +1247,256 @@ fn build_notifications(
                 .checked_sub_signed(duration)
                 .context("notification time is outside the supported date range")?;
             Ok(ParsedReminderNotification {
-                minutes_before,
+                minutes_before: Some(minutes_before),
+                input: None,
                 absolute_utc,
             })
         })
         .collect()
 }
 
+fn parse_absolute_notifications(values: &[String]) -> Result<Vec<ParsedReminderNotification>> {
+    let mut seen = BTreeSet::new();
+    let mut notifications = Vec::new();
+    for input in values {
+        let absolute_utc = DateTime::parse_from_rfc3339(input)
+            .with_context(|| {
+                format!("--notify-at must be RFC3339 with an explicit UTC offset: {input}")
+            })?
+            .with_timezone(&Utc);
+        if seen.insert(absolute_utc) {
+            notifications.push(ParsedReminderNotification {
+                minutes_before: None,
+                input: Some(input.clone()),
+                absolute_utc,
+            });
+        }
+    }
+    Ok(notifications)
+}
+
+fn parse_geofence(
+    schedule: &ReminderAdvancedScheduleArgs,
+) -> Result<Option<ParsedReminderGeofence>> {
+    let Some(title) = schedule.geofence_title.as_deref() else {
+        return Ok(None);
+    };
+    let title = title.trim();
+    if title.is_empty() {
+        bail!("--geofence-title must not be empty");
+    }
+    let latitude = schedule
+        .geofence_latitude
+        .context("--geofence-title requires --geofence-latitude")?;
+    let longitude = schedule
+        .geofence_longitude
+        .context("--geofence-title requires --geofence-longitude")?;
+    let radius_meters = schedule
+        .geofence_radius_meters
+        .context("--geofence-title requires --geofence-radius-meters")?;
+    let proximity = schedule
+        .geofence_proximity
+        .context("--geofence-title requires --geofence-proximity")?;
+    if !latitude.is_finite() || !(-90.0..=90.0).contains(&latitude) {
+        bail!("--geofence-latitude must be a finite value from -90 through 90");
+    }
+    if !longitude.is_finite() || !(-180.0..=180.0).contains(&longitude) {
+        bail!("--geofence-longitude must be a finite value from -180 through 180");
+    }
+    if !radius_meters.is_finite() || radius_meters <= 0.0 {
+        bail!("--geofence-radius-meters must be a positive finite value");
+    }
+    Ok(Some(ParsedReminderGeofence {
+        title: title.to_string(),
+        latitude,
+        longitude,
+        radius_meters,
+        proximity,
+    }))
+}
+
+fn parse_recurrence(
+    schedule: &ReminderAdvancedScheduleArgs,
+) -> Result<Option<ParsedReminderRecurrence>> {
+    let Some(frequency) = schedule.repeat else {
+        if schedule.repeat_interval.is_some()
+            || schedule.repeat_count.is_some()
+            || schedule.repeat_until.is_some()
+        {
+            bail!("recurrence options require --repeat");
+        }
+        return Ok(None);
+    };
+    let interval = schedule.repeat_interval.unwrap_or(1);
+    if interval == 0 {
+        bail!("--repeat-interval must be greater than zero");
+    }
+    if interval > isize::MAX as usize {
+        bail!("--repeat-interval is too large");
+    }
+    if schedule.repeat_count == Some(0) {
+        bail!("--repeat-count must be greater than zero");
+    }
+    if schedule.repeat_count.is_some() && schedule.repeat_until.is_some() {
+        bail!("--repeat-count conflicts with --repeat-until");
+    }
+    let until_utc = schedule
+        .repeat_until
+        .as_deref()
+        .map(|input| {
+            DateTime::parse_from_rfc3339(input)
+                .with_context(|| {
+                    format!("--repeat-until must be RFC3339 with an explicit UTC offset: {input}")
+                })
+                .map(|value| value.with_timezone(&Utc))
+        })
+        .transpose()?;
+    Ok(Some(ParsedReminderRecurrence {
+        frequency,
+        interval,
+        count: schedule.repeat_count,
+        until_utc,
+    }))
+}
+
+fn validate_recurrence_end_after_anchor(
+    recurrence: &ReminderRecurrenceReport,
+    anchor: Option<&ReminderDateReport>,
+) -> Result<()> {
+    let Some(until) = recurrence.end.end_date.as_deref() else {
+        return Ok(());
+    };
+    let anchor = anchor.context("recurrence requires a due or start date")?;
+    let until = DateTime::parse_from_rfc3339(until)
+        .context("recurrence end did not contain a valid RFC3339 instant")?;
+    match anchor.kind {
+        ReminderDateKind::Datetime => {
+            let anchor = anchor
+                .utc
+                .as_deref()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .context("timed recurrence anchor did not contain a normalized instant")?;
+            if until < anchor {
+                bail!("--repeat-until must not be before the recurrence due/start anchor");
+            }
+        }
+        ReminderDateKind::Date => {
+            let anchor = anchor
+                .date
+                .as_deref()
+                .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+                .context("date-only recurrence anchor was invalid")?;
+            if until.date_naive() < anchor {
+                bail!("--repeat-until must not be before the recurrence due/start anchor");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn planned_alarm_reports(
+    notifications: &[ParsedReminderNotification],
+    geofence: Option<&ParsedReminderGeofence>,
+) -> Vec<ReminderPlannedAlarmReport> {
+    let mut reports = notifications
+        .iter()
+        .map(|notification| ReminderPlannedAlarmReport {
+            kind: match notification.minutes_before {
+                Some(0) => "at_due",
+                Some(_) => "before_due",
+                None => "absolute",
+            }
+            .to_string(),
+            input: notification.input.clone(),
+            absolute_utc: Some(notification.absolute_utc.to_rfc3339()),
+            minutes_before_due: notification.minutes_before,
+            proximity: None,
+            structured_location: None,
+        })
+        .collect::<Vec<_>>();
+    if let Some(geofence) = geofence {
+        reports.push(ReminderPlannedAlarmReport {
+            kind: "geofence".to_string(),
+            input: None,
+            absolute_utc: None,
+            minutes_before_due: None,
+            proximity: Some(geofence_proximity_name(geofence.proximity).to_string()),
+            structured_location: Some(ReminderStructuredLocationReport {
+                title: Some(geofence.title.clone()),
+                radius_meters: geofence.radius_meters,
+                latitude: Some(geofence.latitude),
+                longitude: Some(geofence.longitude),
+            }),
+        });
+    }
+    reports
+}
+
+fn recurrence_report_from_parsed(
+    recurrence: &ParsedReminderRecurrence,
+) -> ReminderRecurrenceReport {
+    let end = match (recurrence.count, recurrence.until_utc) {
+        (Some(count), _) => ReminderRecurrenceEndReport {
+            kind: "count".to_string(),
+            occurrence_count: Some(count),
+            end_date: None,
+        },
+        (_, Some(until)) => ReminderRecurrenceEndReport {
+            kind: "date".to_string(),
+            occurrence_count: None,
+            end_date: Some(until.to_rfc3339()),
+        },
+        _ => ReminderRecurrenceEndReport {
+            kind: "never".to_string(),
+            occurrence_count: None,
+            end_date: None,
+        },
+    };
+    ReminderRecurrenceReport {
+        frequency: repeat_name(recurrence.frequency).to_string(),
+        interval: recurrence.interval,
+        first_day_of_week: 0,
+        end,
+        days_of_week: None,
+        days_of_month: None,
+        months_of_year: None,
+        weeks_of_year: None,
+        days_of_year: None,
+        set_positions: None,
+    }
+}
+
+fn geofence_proximity_name(value: ReminderGeofenceProximityArg) -> &'static str {
+    match value {
+        ReminderGeofenceProximityArg::Arrive => "arrive",
+        ReminderGeofenceProximityArg::Leave => "leave",
+    }
+}
+
+fn repeat_name(value: ReminderRepeatArg) -> &'static str {
+    match value {
+        ReminderRepeatArg::Daily => "daily",
+        ReminderRepeatArg::Weekly => "weekly",
+        ReminderRepeatArg::Monthly => "monthly",
+        ReminderRepeatArg::Yearly => "yearly",
+    }
+}
+
 fn notification_reports(
     notifications: &[ParsedReminderNotification],
-    due: Option<&ParsedReminderDate>,
+    due: Option<&ReminderDateReport>,
 ) -> Vec<ReminderNotificationReport> {
     notifications
         .iter()
+        .filter(|notification| notification.minutes_before.is_some())
         .map(|notification| ReminderNotificationReport {
-            kind: if notification.minutes_before == 0 {
+            kind: if notification.minutes_before == Some(0) {
                 "at_due"
             } else {
                 "before_due"
             }
             .to_string(),
-            minutes_before: notification.minutes_before,
+            minutes_before: notification.minutes_before.unwrap_or_default(),
             absolute_utc: notification.absolute_utc.to_rfc3339(),
             absolute_in_due_time_zone: render_notification_in_due_time_zone(
                 notification.absolute_utc,
@@ -1086,13 +1508,12 @@ fn notification_reports(
 
 fn render_notification_in_due_time_zone(
     instant: DateTime<Utc>,
-    due: Option<&ParsedReminderDate>,
+    due: Option<&ReminderDateReport>,
 ) -> String {
     let Some(due) = due else {
         return instant.to_rfc3339();
     };
     if let Some(zone) = due
-        .report
         .time_zone
         .as_deref()
         .and_then(|value| value.parse::<chrono_tz::Tz>().ok())
@@ -1100,7 +1521,6 @@ fn render_notification_in_due_time_zone(
         return instant.with_timezone(&zone).to_rfc3339();
     }
     if let Some(offset) = due
-        .report
         .normalized
         .as_deref()
         .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
@@ -1680,6 +2100,12 @@ impl ReminderStore for EventKitReminderStore {
             set_reminder_url(&reminder, url)?;
         }
         add_reminder_notifications(&reminder, &draft.notifications);
+        if let Some(geofence) = &draft.geofence {
+            add_reminder_geofence(&reminder, geofence);
+        }
+        if let Some(recurrence) = &draft.recurrence {
+            set_reminder_recurrence(&reminder, Some(recurrence));
+        }
         self.save_reminder(&reminder)?;
         Ok(reminder_to_report(&reminder, true))
     }
@@ -1708,6 +2134,12 @@ impl ReminderStore for EventKitReminderStore {
         if let Some(notifications) = &patch.notifications {
             unsafe { reminder.setAlarms(None) };
             add_reminder_notifications(&reminder, notifications);
+            if let Some(geofence) = patch.geofence.as_ref().and_then(Option::as_ref) {
+                add_reminder_geofence(&reminder, geofence);
+            }
+        }
+        if let Some(recurrence) = &patch.recurrence {
+            set_reminder_recurrence(&reminder, Some(recurrence));
         }
         self.save_reminder(&reminder)?;
         Ok(reminder_to_report(&reminder, true))
@@ -1766,6 +2198,16 @@ impl ReminderStore for EventKitReminderStore {
         if let Some(priority) = patch.priority_value {
             unsafe { reminder.setPriority(priority) };
         }
+        if let Some(notifications) = &patch.notifications {
+            unsafe { reminder.setAlarms(None) };
+            add_reminder_notifications(&reminder, notifications);
+            if let Some(geofence) = patch.geofence.as_ref().and_then(Option::as_ref) {
+                add_reminder_geofence(&reminder, geofence);
+            }
+        }
+        if let Some(recurrence) = &patch.recurrence {
+            set_reminder_recurrence(&reminder, recurrence.as_ref());
+        }
         self.save_reminder(&reminder)?;
         Ok(reminder_to_report(&reminder, true))
     }
@@ -1785,9 +2227,7 @@ impl ReminderStore for EventKitReminderStore {
         }
         match completed_at {
             Some(completed_at) => {
-                let date = NSDate::dateWithTimeIntervalSince1970(
-                    completed_at.timestamp_millis() as f64 / 1_000.0,
-                );
+                let date = nsdate_from_utc(completed_at);
                 unsafe { reminder.setCompletionDate(Some(&date)) };
             }
             None => unsafe { reminder.setCompletionDate(None) },
@@ -1879,12 +2319,71 @@ fn set_reminder_url(reminder: &EKReminder, value: &str) -> Result<()> {
 
 fn add_reminder_notifications(reminder: &EKReminder, notifications: &[ParsedReminderNotification]) {
     for notification in notifications {
-        let date = NSDate::dateWithTimeIntervalSince1970(
-            notification.absolute_utc.timestamp_millis() as f64 / 1_000.0,
-        );
+        let date = nsdate_from_utc(notification.absolute_utc);
         let alarm = unsafe { EKAlarm::alarmWithAbsoluteDate(&date) };
         unsafe { reminder.addAlarm(&alarm) };
     }
+}
+
+fn add_reminder_geofence(reminder: &EKReminder, geofence: &ParsedReminderGeofence) {
+    let title = NSString::from_str(&geofence.title);
+    let structured = unsafe { EKStructuredLocation::locationWithTitle(&title) };
+    let location = unsafe {
+        CLLocation::initWithLatitude_longitude(
+            CLLocation::alloc(),
+            geofence.latitude,
+            geofence.longitude,
+        )
+    };
+    unsafe {
+        structured.setGeoLocation(Some(&location));
+        structured.setRadius(geofence.radius_meters);
+    }
+    let alarm = unsafe { EKAlarm::alarmWithRelativeOffset(0.0) };
+    unsafe {
+        alarm.setStructuredLocation(Some(&structured));
+        alarm.setProximity(match geofence.proximity {
+            ReminderGeofenceProximityArg::Arrive => EKAlarmProximity::Enter,
+            ReminderGeofenceProximityArg::Leave => EKAlarmProximity::Leave,
+        });
+        reminder.addAlarm(&alarm);
+    }
+}
+
+fn set_reminder_recurrence(reminder: &EKReminder, recurrence: Option<&ParsedReminderRecurrence>) {
+    let Some(recurrence) = recurrence else {
+        unsafe { reminder.setRecurrenceRules(None) };
+        return;
+    };
+    let end = if let Some(count) = recurrence.count {
+        Some(unsafe { EKRecurrenceEnd::recurrenceEndWithOccurrenceCount(count) })
+    } else {
+        recurrence.until_utc.map(|until| {
+            let date = nsdate_from_utc(until);
+            unsafe { EKRecurrenceEnd::recurrenceEndWithEndDate(&date) }
+        })
+    };
+    let rule = unsafe {
+        EKRecurrenceRule::initRecurrenceWithFrequency_interval_end(
+            EKRecurrenceRule::alloc(),
+            match recurrence.frequency {
+                ReminderRepeatArg::Daily => EKRecurrenceFrequency::Daily,
+                ReminderRepeatArg::Weekly => EKRecurrenceFrequency::Weekly,
+                ReminderRepeatArg::Monthly => EKRecurrenceFrequency::Monthly,
+                ReminderRepeatArg::Yearly => EKRecurrenceFrequency::Yearly,
+            },
+            recurrence.interval as isize,
+            end.as_deref(),
+        )
+    };
+    let rules = NSArray::from_retained_slice(&[rule]);
+    unsafe { reminder.setRecurrenceRules(Some(&rules)) };
+}
+
+fn nsdate_from_utc(value: DateTime<Utc>) -> Retained<NSDate> {
+    NSDate::dateWithTimeIntervalSince1970(
+        value.timestamp() as f64 + f64::from(value.timestamp_subsec_nanos()) / 1_000_000_000.0,
+    )
 }
 
 fn reminder_list_report(list: &EKCalendar, is_default: bool) -> ReminderListReport {
@@ -2053,14 +2552,20 @@ fn reminder_alarms(reminder: &EKReminder) -> Vec<ReminderAlarmReport> {
 
 fn alarm_report(alarm: &EKAlarm) -> ReminderAlarmReport {
     let absolute = unsafe { alarm.absoluteDate() };
+    let eventkit_location = unsafe { alarm.structuredLocation() };
     let structured_location =
-        unsafe { alarm.structuredLocation() }.map(|location| ReminderStructuredLocationReport {
-            title: unsafe { location.title() }.map(|title| title.to_string()),
-            radius_meters: unsafe { location.radius() },
-        });
+        eventkit_location
+            .as_ref()
+            .map(|location| ReminderStructuredLocationReport {
+                title: unsafe { location.title() }.map(|title| title.to_string()),
+                radius_meters: unsafe { location.radius() },
+                latitude: unsafe { location.geoLocation() }
+                    .map(|value| unsafe { value.coordinate() }.latitude),
+                longitude: unsafe { location.geoLocation() }
+                    .map(|value| unsafe { value.coordinate() }.longitude),
+            });
     ReminderAlarmReport {
-        relative_offset_seconds: absolute
-            .is_none()
+        relative_offset_seconds: (absolute.is_none() && eventkit_location.is_none())
             .then(|| unsafe { alarm.relativeOffset() }),
         absolute_date: absolute.as_deref().map(nsdate_rfc3339),
         proximity: alarm_proximity_name(unsafe { alarm.proximity() }).to_string(),
@@ -2346,7 +2851,21 @@ mod tests {
             report.priority = priority_name(draft.priority_value);
             report.has_notes = report.notes.is_some();
             report.has_url = report.url.is_some();
-            report.alarm_count = Some(draft.notifications.len());
+            report.alarm_count =
+                Some(draft.notifications.len() + usize::from(draft.geofence.is_some()));
+            report.alarms = Some(alarm_reports_from_parsed(
+                &draft.notifications,
+                draft.geofence.as_ref(),
+            ));
+            report.recurrence_count = Some(usize::from(draft.recurrence.is_some()));
+            report.recurrence_rules = Some(
+                draft
+                    .recurrence
+                    .as_ref()
+                    .map(recurrence_report_from_parsed)
+                    .into_iter()
+                    .collect(),
+            );
             Ok(report)
         }
 
@@ -2373,7 +2892,13 @@ mod tests {
                 report.priority = priority_name(priority);
             }
             if let Some(notifications) = &patch.notifications {
-                report.alarm_count = Some(notifications.len());
+                let geofence = patch.geofence.as_ref().and_then(Option::as_ref);
+                report.alarm_count = Some(notifications.len() + usize::from(geofence.is_some()));
+                report.alarms = Some(alarm_reports_from_parsed(notifications, geofence));
+            }
+            if let Some(recurrence) = &patch.recurrence {
+                report.recurrence_count = Some(1);
+                report.recurrence_rules = Some(vec![recurrence_report_from_parsed(recurrence)]);
             }
             Ok(report)
         }
@@ -2431,6 +2956,21 @@ mod tests {
         }
     }
 
+    fn advanced_schedule() -> ReminderAdvancedScheduleArgs {
+        ReminderAdvancedScheduleArgs {
+            notify_at: Vec::new(),
+            geofence_title: None,
+            geofence_latitude: None,
+            geofence_longitude: None,
+            geofence_radius_meters: None,
+            geofence_proximity: None,
+            repeat: None,
+            repeat_interval: None,
+            repeat_count: None,
+            repeat_until: None,
+        }
+    }
+
     fn add_command(title: &str) -> AddReminderCommand {
         AddReminderCommand {
             title: title.to_string(),
@@ -2445,6 +2985,7 @@ mod tests {
             priority: None,
             notify_at_due: false,
             notify_minutes_before: Vec::new(),
+            schedule: advanced_schedule(),
             if_exists: IfExistsArg::Error,
             duplicate_window_seconds: 0,
             dry_run: true,
@@ -2875,7 +3416,7 @@ mod tests {
         let patch = store.last_patch.borrow();
         let notifications = patch.as_ref().unwrap().notifications.as_ref().unwrap();
         assert_eq!(notifications.len(), 1);
-        assert_eq!(notifications[0].minutes_before, 15);
+        assert_eq!(notifications[0].minutes_before, Some(15));
     }
 
     #[test]
@@ -2996,6 +3537,11 @@ mod tests {
             location: None,
             clear_location: false,
             priority: None,
+            notify_at_due: false,
+            notify_minutes_before: Vec::new(),
+            schedule: advanced_schedule(),
+            clear_notifications: false,
+            clear_recurrence: false,
             dry_run: true,
         }
     }
@@ -3271,5 +3817,248 @@ mod tests {
                 .contains("writability is unknown")
         );
         assert_eq!(store.completion_updates.get(), 0);
+    }
+
+    #[test]
+    fn absolute_alarm_and_recurrence_dry_run_are_deterministic() {
+        let store = FakeStore::new();
+        let mut command = add_command("Recurring task");
+        command.due = Some("2026-07-15T09:00:00+03:00".to_string());
+        command.schedule.notify_at = vec![
+            "2026-07-15T07:00:00+03:00".to_string(),
+            "2026-07-15T04:00:00+00:00".to_string(),
+        ];
+        command.schedule.repeat = Some(ReminderRepeatArg::Weekly);
+        command.schedule.repeat_interval = Some(2);
+        command.schedule.repeat_count = Some(6);
+
+        let output = add_reminder(&store, command).unwrap();
+        let JsonOutput::ReminderDryRun { draft, .. } = output else {
+            panic!("expected reminder dry run");
+        };
+        assert_eq!(draft.notification_count, 0);
+        assert!(draft.notifications.is_empty());
+        assert_eq!(draft.planned_alarm_count, 1);
+        assert_eq!(draft.planned_alarms[0].kind, "absolute");
+        assert_eq!(
+            draft.planned_alarms[0].absolute_utc.as_deref(),
+            Some("2026-07-15T04:00:00+00:00")
+        );
+        let recurrence = draft.recurrence.as_ref().unwrap();
+        assert_eq!(recurrence.frequency, "weekly");
+        assert_eq!(recurrence.interval, 2);
+        assert_eq!(recurrence.end.occurrence_count, Some(6));
+        assert_eq!(store.creates.get(), 0);
+    }
+
+    #[test]
+    fn advanced_schedule_validation_rejects_bad_offsets_geofences_and_recurrence() {
+        assert!(
+            parse_absolute_notifications(&["2026-07-15T09:00:00".to_string()])
+                .unwrap_err()
+                .to_string()
+                .contains("explicit UTC offset")
+        );
+
+        let mut schedule = advanced_schedule();
+        schedule.geofence_title = Some("Office".to_string());
+        schedule.geofence_latitude = Some(91.0);
+        schedule.geofence_longitude = Some(24.9384);
+        schedule.geofence_radius_meters = Some(100.0);
+        schedule.geofence_proximity = Some(ReminderGeofenceProximityArg::Arrive);
+        assert!(
+            parse_geofence(&schedule)
+                .unwrap_err()
+                .to_string()
+                .contains("-90 through 90")
+        );
+
+        let mut schedule = advanced_schedule();
+        schedule.repeat = Some(ReminderRepeatArg::Daily);
+        schedule.repeat_interval = Some(0);
+        assert!(
+            parse_recurrence(&schedule)
+                .unwrap_err()
+                .to_string()
+                .contains("greater than zero")
+        );
+    }
+
+    #[test]
+    fn geofence_plan_preserves_coordinates_radius_and_proximity() {
+        let mut schedule = advanced_schedule();
+        schedule.geofence_title = Some("Office".to_string());
+        schedule.geofence_latitude = Some(60.1699);
+        schedule.geofence_longitude = Some(24.9384);
+        schedule.geofence_radius_meters = Some(150.0);
+        schedule.geofence_proximity = Some(ReminderGeofenceProximityArg::Leave);
+        let geofence = parse_geofence(&schedule).unwrap().unwrap();
+        let reports = planned_alarm_reports(&[], Some(&geofence));
+
+        assert_eq!(reports[0].kind, "geofence");
+        assert_eq!(reports[0].proximity.as_deref(), Some("leave"));
+        let location = reports[0].structured_location.as_ref().unwrap();
+        assert_eq!(location.title.as_deref(), Some("Office"));
+        assert_eq!(location.latitude, Some(60.1699));
+        assert_eq!(location.longitude, Some(24.9384));
+        assert_eq!(location.radius_meters, 150.0);
+    }
+
+    #[test]
+    fn lifecycle_can_replace_or_clear_alarms_and_recurrence_without_writes() {
+        let store = FakeStore::new();
+        let mut existing = reminder("R1", "Task", false, Some("2026-07-15"));
+        existing.alarm_count = Some(2);
+        existing.alarms = Some(vec![]);
+        existing.recurrence_count = Some(1);
+        existing.recurrence_rules = Some(vec![]);
+        store.reminders.borrow_mut().push(existing);
+
+        let mut replace = update_command("R1");
+        replace.schedule.notify_at = vec!["2026-07-14T09:00:00+03:00".to_string()];
+        replace.schedule.repeat = Some(ReminderRepeatArg::Monthly);
+        replace.schedule.repeat_until = Some("2026-12-31T23:59:00+02:00".to_string());
+        let output = update_reminder(&store, replace).unwrap();
+        let JsonOutput::ReminderMutationDryRun { draft, .. } = output else {
+            panic!("expected mutation dry run");
+        };
+        assert_eq!(draft.result.alarm_count, Some(1));
+        assert_eq!(draft.result.alarms.as_ref().unwrap()[0].proximity, "none");
+        assert_eq!(draft.result.recurrence_count, Some(1));
+        assert_eq!(
+            draft.result.recurrence_rules.as_ref().unwrap()[0].frequency,
+            "monthly"
+        );
+        assert_eq!(store.lifecycle_updates.get(), 0);
+
+        let mut clear = update_command("R1");
+        clear.clear_notifications = true;
+        clear.clear_recurrence = true;
+        let output = update_reminder(&store, clear).unwrap();
+        let JsonOutput::ReminderMutationDryRun { draft, .. } = output else {
+            panic!("expected mutation dry run");
+        };
+        assert_eq!(draft.result.alarm_count, Some(0));
+        assert!(draft.result.alarms.as_ref().unwrap().is_empty());
+        assert_eq!(draft.result.recurrence_count, Some(0));
+        assert!(draft.result.recurrence_rules.as_ref().unwrap().is_empty());
+        assert_eq!(store.lifecycle_updates.get(), 0);
+    }
+
+    #[test]
+    fn recurrence_requires_a_due_or_start_anchor() {
+        let store = FakeStore::new();
+        let mut command = add_command("Task");
+        command.schedule.repeat = Some(ReminderRepeatArg::Daily);
+        assert!(
+            add_reminder(&store, command)
+                .unwrap_err()
+                .to_string()
+                .contains("requires a due or start")
+        );
+        assert_eq!(store.creates.get(), 0);
+    }
+
+    #[test]
+    fn existing_recurrence_cannot_lose_its_final_anchor_without_clear() {
+        let store = FakeStore::new();
+        let mut existing = reminder("R1", "Task", false, Some("2026-07-15"));
+        existing.recurrence_count = Some(1);
+        existing.recurrence_rules = Some(vec![recurrence_report_from_parsed(
+            &ParsedReminderRecurrence {
+                frequency: ReminderRepeatArg::Daily,
+                interval: 1,
+                count: None,
+                until_utc: None,
+            },
+        )]);
+        store.reminders.borrow_mut().push(existing);
+
+        let mut invalid = update_command("R1");
+        invalid.clear_due = true;
+        assert!(
+            update_reminder(&store, invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("clear recurrence")
+        );
+        assert_eq!(store.lifecycle_updates.get(), 0);
+
+        let mut valid = update_command("R1");
+        valid.clear_due = true;
+        valid.clear_recurrence = true;
+        let output = update_reminder(&store, valid).unwrap();
+        let JsonOutput::ReminderMutationDryRun { draft, .. } = output else {
+            panic!("expected mutation dry run");
+        };
+        assert!(draft.result.due.is_none());
+        assert_eq!(draft.result.recurrence_count, Some(0));
+    }
+
+    #[test]
+    fn recurrence_until_must_not_precede_resulting_anchor() {
+        let store = FakeStore::new();
+        let mut add = add_command("Task");
+        add.due = Some("2026-07-15T09:00:00+03:00".to_string());
+        add.schedule.repeat = Some(ReminderRepeatArg::Daily);
+        add.schedule.repeat_until = Some("2026-07-14T09:00:00+03:00".to_string());
+        assert!(
+            add_reminder(&store, add)
+                .unwrap_err()
+                .to_string()
+                .contains("must not be before")
+        );
+
+        store
+            .reminders
+            .borrow_mut()
+            .push(reminder("R1", "Task", false, Some("2026-07-15")));
+        let mut update = update_command("R1");
+        update.schedule.repeat = Some(ReminderRepeatArg::Weekly);
+        update.schedule.repeat_until = Some("2026-07-14T23:59:00+03:00".to_string());
+        assert!(
+            update_reminder(&store, update)
+                .unwrap_err()
+                .to_string()
+                .contains("must not be before")
+        );
+        assert_eq!(store.lifecycle_updates.get(), 0);
+    }
+
+    #[test]
+    fn duplicate_update_validates_recurrence_against_preserved_matched_due() {
+        let store = FakeStore::new();
+        let existing_due = parse_reminder_date("2026-07-15T09:00:00+03:00", None).unwrap();
+        let mut existing = reminder("R1", "Task", false, None);
+        existing.due = Some(existing_due.report);
+        store.reminders.borrow_mut().push(existing);
+
+        let mut command = add_command("Task");
+        command.due = Some("2026-07-15T08:59:00+03:00".to_string());
+        command.duplicate_window_seconds = 120;
+        command.if_exists = IfExistsArg::Update;
+        command.schedule.repeat = Some(ReminderRepeatArg::Daily);
+        command.schedule.repeat_until = Some("2026-07-15T08:59:30+03:00".to_string());
+
+        assert!(
+            add_reminder(&store, command)
+                .unwrap_err()
+                .to_string()
+                .contains("must not be before")
+        );
+        assert_eq!(store.updates.get(), 0);
+    }
+
+    #[test]
+    fn absolute_alarms_keep_distinct_submillisecond_instants() {
+        let notifications = parse_absolute_notifications(&[
+            "2026-07-15T09:00:00.000100+03:00".to_string(),
+            "2026-07-15T09:00:00.000900+03:00".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(notifications.len(), 2);
+        let first = nsdate_from_utc(notifications[0].absolute_utc);
+        let second = nsdate_from_utc(notifications[1].absolute_utc);
+        assert!(second.timeIntervalSince1970() > first.timeIntervalSince1970());
     }
 }

@@ -1,6 +1,7 @@
 use crate::models::{DoctorReport, InfoPlistReport, ProcessReport};
 use crate::reminders::ReminderAuthorization;
 use eventkit::{AuthorizationStatus, EventsManager};
+use objc2_core_location::{CLAuthorizationStatus, CLLocationManager};
 use std::fmt::Debug;
 
 const BUNDLE_IDENTIFIER: &str = "dev.zyd.icalctl";
@@ -9,6 +10,7 @@ const INFO_PLIST: &str = include_str!("../Info.plist");
 pub fn doctor_report() -> DoctorReport {
     let authorization = EventsManager::authorization_status();
     let reminders_authorization = ReminderAuthorization::current();
+    let location = location_capability();
     let executable = std::env::current_exe()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|error| format!("unknown ({error})"));
@@ -17,6 +19,8 @@ pub fn doctor_report() -> DoctorReport {
     DoctorReport {
         authorization: authorization_name(authorization).to_string(),
         reminders_authorization: reminders_authorization.as_str().to_string(),
+        location_authorization: location.authorization.clone(),
+        location_services_enabled: location.services_enabled,
         process: ProcessReport {
             pid: std::process::id(),
             executable,
@@ -34,12 +38,77 @@ pub fn doctor_report() -> DoctorReport {
                 .contains("NSRemindersFullAccessUsageDescription"),
             has_reminders_legacy_usage_description: INFO_PLIST
                 .contains("NSRemindersUsageDescription"),
+            has_location_usage_description: INFO_PLIST
+                .contains("NSLocationWhenInUseUsageDescription"),
         },
         recommended_command: recommended_command(authorization).to_string(),
         recommended_reminders_command: recommended_reminders_command(reminders_authorization)
             .to_string(),
         remediation: remediation(authorization),
         reminders_remediation: reminders_remediation(reminders_authorization),
+        location_remediation: location_remediation(&location),
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LocationCapability {
+    pub authorization: String,
+    pub services_enabled: bool,
+}
+
+pub fn location_capability() -> LocationCapability {
+    let manager = unsafe { CLLocationManager::new() };
+    let status = unsafe { manager.authorizationStatus() };
+    LocationCapability {
+        authorization: location_authorization_name(status).to_string(),
+        services_enabled: unsafe { CLLocationManager::locationServicesEnabled_class() },
+    }
+}
+
+fn location_authorization_name(status: CLAuthorizationStatus) -> &'static str {
+    if status == CLAuthorizationStatus::AuthorizedAlways {
+        "AuthorizedAlways"
+    } else if status == CLAuthorizationStatus::AuthorizedWhenInUse {
+        "AuthorizedWhenInUse"
+    } else if status == CLAuthorizationStatus::NotDetermined {
+        "NotDetermined"
+    } else if status == CLAuthorizationStatus::Restricted {
+        "Restricted"
+    } else if status == CLAuthorizationStatus::Denied {
+        "Denied"
+    } else {
+        "Unknown"
+    }
+}
+
+fn location_remediation(capability: &LocationCapability) -> Vec<String> {
+    if !capability.services_enabled {
+        return vec![
+            "Location Services are disabled. This does not block writing an explicit-coordinate EventKit geofence, but macOS may not deliver location triggers until services are enabled."
+                .to_string(),
+        ];
+    }
+    match capability.authorization.as_str() {
+        "AuthorizedAlways" | "AuthorizedWhenInUse" => vec![
+            "Location access is authorized. Explicit-coordinate EventKit geofence creation does not read the device's current location."
+                .to_string(),
+        ],
+        "NotDetermined" => vec![
+            "Location access has not been decided. Explicit-coordinate EventKit geofence creation does not request the device's current location; this status is informational."
+                .to_string(),
+        ],
+        "Denied" => vec![
+            "Location access is denied. This does not block writing an explicit-coordinate EventKit geofence because icalctl does not read the device's current location."
+                .to_string(),
+        ],
+        "Restricted" => vec![
+            "Location access is restricted by system policy. Explicit-coordinate EventKit geofence creation does not consume current location, though macOS delivery remains system-controlled."
+                .to_string(),
+        ],
+        _ => vec![
+            "macOS returned an unknown Location authorization status; inspect System Settings before using reminder geofences."
+                .to_string(),
+        ],
     }
 }
 
@@ -186,5 +255,6 @@ mod tests {
                 .has_reminders_full_access_usage_description
         );
         assert!(report.info_plist.has_reminders_legacy_usage_description);
+        assert!(report.info_plist.has_location_usage_description);
     }
 }

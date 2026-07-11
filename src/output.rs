@@ -1,7 +1,8 @@
 use crate::models::{
     AlarmReport, BatchReport, CalendarReport, EventDraftReport, EventReport, JsonOutput,
     ReminderAlarmReport, ReminderDateKind, ReminderDateReport, ReminderDraftReport,
-    ReminderListReport, ReminderMutationDraftReport, ReminderReport,
+    ReminderListReport, ReminderMutationDraftReport, ReminderRecurrenceEndReport,
+    ReminderRecurrenceReport, ReminderReport,
 };
 use chrono::DateTime;
 
@@ -16,6 +17,11 @@ pub fn print_human_output(output: &JsonOutput) {
             println!(
                 "Reminders authorization: {}",
                 doctor.reminders_authorization
+            );
+            println!("Location authorization: {}", doctor.location_authorization);
+            println!(
+                "Location services enabled: {}",
+                doctor.location_services_enabled
             );
             println!(
                 "process: {} [{}]",
@@ -37,6 +43,9 @@ pub fn print_human_output(output: &JsonOutput) {
                 doctor.recommended_reminders_command
             );
             for step in &doctor.reminders_remediation {
+                println!("- {step}");
+            }
+            for step in &doctor.location_remediation {
                 println!("- {step}");
             }
         }
@@ -140,6 +149,38 @@ fn print_reminder_dry_run(draft: &ReminderDraftReport) {
                 notification.minutes_before, notification.absolute_in_due_time_zone
             );
         }
+    }
+    println!("planned alarms: {}", draft.planned_alarm_count);
+    for alarm in &draft.planned_alarms {
+        match alarm.kind.as_str() {
+            "geofence" => {
+                let location = alarm.structured_location.as_ref();
+                println!(
+                    "- {} at {} ({}, {}) radius={}m",
+                    alarm.proximity.as_deref().unwrap_or("location"),
+                    location
+                        .and_then(|value| value.title.as_deref())
+                        .unwrap_or("location"),
+                    location
+                        .and_then(|value| value.latitude)
+                        .unwrap_or_default(),
+                    location
+                        .and_then(|value| value.longitude)
+                        .unwrap_or_default(),
+                    location
+                        .map(|value| value.radius_meters)
+                        .unwrap_or_default()
+                );
+            }
+            _ => println!(
+                "- {}: {}",
+                alarm.kind,
+                alarm.absolute_utc.as_deref().unwrap_or("unknown time")
+            ),
+        }
+    }
+    if let Some(recurrence) = &draft.recurrence {
+        println!("recurrence: {}", reminder_recurrence_label(recurrence));
     }
     println!(
         "fields: notes={} location={} url={}",
@@ -283,7 +324,7 @@ fn print_reminder_detail(reminder: &ReminderReport) {
     if let Some(rules) = &reminder.recurrence_rules {
         println!("recurrence rules: {}", rules.len());
         for rule in rules {
-            println!("- every {} {}", rule.interval, rule.frequency);
+            println!("- {}", reminder_recurrence_label(rule));
         }
     }
     if let Some(notes) = &reminder.notes {
@@ -338,6 +379,21 @@ fn reminder_priority_label(priority: &crate::models::ReminderPriority) -> &'stat
         crate::models::ReminderPriority::Medium => "medium",
         crate::models::ReminderPriority::Low => "low",
     }
+}
+
+fn reminder_recurrence_label(rule: &ReminderRecurrenceReport) -> String {
+    let end = match &rule.end {
+        ReminderRecurrenceEndReport {
+            occurrence_count: Some(count),
+            ..
+        } => format!("count={count}"),
+        ReminderRecurrenceEndReport {
+            end_date: Some(until),
+            ..
+        } => format!("until={until}"),
+        _ => "never".to_string(),
+    };
+    format!("every {} {} ({end})", rule.interval, rule.frequency)
 }
 
 fn print_batch(batch: &BatchReport) {
@@ -615,5 +671,44 @@ mod tests {
     fn time_format_includes_rfc3339_offset() {
         assert_eq!(time_with_offset("2026-07-12T15:55:00+03:00"), "15:55+03:00");
         assert_eq!(time_with_offset("2026-07-12T15:55:00+02:00"), "15:55+02:00");
+    }
+
+    #[test]
+    fn reminder_recurrence_label_includes_termination() {
+        let mut rule = ReminderRecurrenceReport {
+            frequency: "monthly".to_string(),
+            interval: 2,
+            first_day_of_week: 0,
+            end: ReminderRecurrenceEndReport {
+                kind: "count".to_string(),
+                occurrence_count: Some(12),
+                end_date: None,
+            },
+            days_of_week: None,
+            days_of_month: None,
+            months_of_year: None,
+            weeks_of_year: None,
+            days_of_year: None,
+            set_positions: None,
+        };
+        assert_eq!(
+            reminder_recurrence_label(&rule),
+            "every 2 monthly (count=12)"
+        );
+        rule.end = ReminderRecurrenceEndReport {
+            kind: "date".to_string(),
+            occurrence_count: None,
+            end_date: Some("2026-12-31T21:59:00+00:00".to_string()),
+        };
+        assert_eq!(
+            reminder_recurrence_label(&rule),
+            "every 2 monthly (until=2026-12-31T21:59:00+00:00)"
+        );
+        rule.end = ReminderRecurrenceEndReport {
+            kind: "never".to_string(),
+            occurrence_count: None,
+            end_date: None,
+        };
+        assert_eq!(reminder_recurrence_label(&rule), "every 2 monthly (never)");
     }
 }

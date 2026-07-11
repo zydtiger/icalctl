@@ -228,8 +228,22 @@ icalctl reminders delete ID
 
 `--completed-at` requires RFC3339 with an explicit offset; omission uses the
 current instant. `--clear-time-zone` preserves timed due/start wall-clock fields
-while removing their EventKit timezone metadata. Lifecycle updates preserve
-alarms and recurrence rules until their dedicated mutation phase.
+while removing their EventKit timezone metadata. Omitted alarm and recurrence
+fields remain unchanged. Any supplied notification or geofence option replaces
+the complete alarm collection; `--clear-notifications` removes it. `--repeat`
+replaces the single recurrence rule and `--clear-recurrence` removes it.
+
+For arbitrary time alarms, use repeatable offset-bearing
+`--notify-at <RFC3339>`. For a location alarm, require the complete explicit
+tuple: `--geofence-title`, latitude, longitude, positive radius in meters, and
+`--geofence-proximity arrive|leave`. Never infer coordinates. Run
+`icalctl doctor --json` for Location diagnostics. Treat those fields as
+informational for explicit-coordinate geofences because icalctl does not read
+the device's current location; macOS still controls eventual trigger delivery.
+For recurrence, require a due/start anchor and use
+`--repeat daily|weekly|monthly|yearly`, an optional positive interval, and either a positive
+count or offset-bearing end instant. Include every alarm, geofence coordinate,
+radius, proximity, and recurrence end in the user confirmation.
 
 ## Date And Time Input
 
@@ -394,11 +408,22 @@ computed absolute UTC and due-timezone instants. When notification flags are
 supplied with `--if-exists update`, they replace existing alarms; omission
 preserves them.
 
+Use repeatable `--notify-at <RFC3339>` for arbitrary absolute alarms. Use the
+complete `--geofence-title`, latitude, longitude, radius, and
+`--geofence-proximity arrive|leave` tuple for one location alarm. Diagnose
+Location state with `icalctl doctor --json`; do not treat authorization as a
+prerequisite for constructing an explicit-coordinate EventKit geofence.
+Simple recurrence uses `--repeat daily|weekly|monthly|yearly`, optional
+`--repeat-interval`, and either `--repeat-count` or offset-bearing
+`--repeat-until`; it requires a due or start date. On update, explicit schedule
+options replace their existing collection, clear flags remove it, and omission
+preserves it.
+
 Duplicate identity is list id + title + due kind/value. `--if-exists` defaults
 to `error`; `skip` returns the existing reminder and `update` changes only
 supplied non-identity fields. `--duplicate-window-seconds` applies only to
 timed due matching. Date-only and undated identities stay exact. No alarms are
-added unless a notification flag is supplied.
+added unless a notification or geofence option is supplied.
 
 Only use the public EventKit reminder surface. Do not inspect private selectors,
 use KVC for Reminders.app-only metadata, or edit the Calendar database. Flags,
