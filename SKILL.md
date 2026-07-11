@@ -19,11 +19,11 @@ cargo install --path .
 
 - Prefer `icalctl <command> --json` whenever output must be parsed by an agent or script.
 - Use human-friendly output when answering a person directly and JSON when making decisions from command output.
-- Treat event `add`, live `batch add`, `update`, `delete`, and `reminders add` without `--dry-run` as live user-data writes.
+- Treat event `add`, live `batch add`, `update`, `delete`, and reminder add/update/complete/uncomplete/delete commands without `--dry-run` as live user-data writes.
 - Do not create, update, move, or delete an event until the user has explicitly confirmed the final action.
 - For every request to add an event, analyze the best-fit calendar from the user's available calendars and confirm that calendar choice before writing.
 - Prefer exact `--calendar-id` selectors for agent writes and reads. Title-only selectors are acceptable only when the title is unique.
-- Do not create a reminder until the user has explicitly confirmed the exact target reminder-list title and id plus the final reminder details. This is required for dated reminders just as calendar selection is required for events.
+- Do not create, update, move, complete, uncomplete, or delete a reminder until the user has explicitly confirmed the exact reminder, target reminder-list title/id when applicable, and final change. This is required for dated reminders just as calendar selection is required for events.
 - Prefer exact `--list-id` selectors for reminder writes and reads. A title-only reminder-list selector is acceptable only when the title is unique; otherwise qualify it by source.
 - Use `icalctl reminders default-list --json` before any workflow that intentionally relies on EventKit's implicit default reminder list.
 - Use `icalctl default-calendar --json` before any workflow that intentionally relies on EventKit's implicit default target.
@@ -195,6 +195,41 @@ title/id/source, priority, and write action.
 A dry run never replaces user confirmation. Use `--if-exists skip` for
 retry-safe creation only after previewing the match. Use `update` only when the
 user has confirmed the supplied non-identity patches.
+
+## Required Workflow for Reminder Lifecycle Changes
+
+For reminder updates, moves, completion changes, and deletion:
+
+1. Resolve a fresh exact target with `icalctl reminders show ID --json`. Use a
+   reminder row only immediately after a fresh reminder list/search.
+2. For a list move, inspect `icalctl reminders lists --writable-only --json`
+   and select the destination by exact `--list-id` whenever possible.
+3. Preview updates, completion, and uncompletion with `--dry-run --json`.
+   Confirm the before/result reminder, changed fields, dates/timezones,
+   priority, and exact destination list. Omitted update fields remain unchanged;
+   nullable fields require their explicit `--clear-*` option, while
+   `--priority none` clears priority.
+4. Ask the user for explicit confirmation before the live command. A dry run is
+   not consent.
+5. For deletion, show the exact reminder and ask for confirmation before
+   invoking `reminders delete`; use `--force` only after that confirmation.
+
+Examples:
+
+```sh
+icalctl reminders update ID --due 2026-07-16T09:30 \
+  --time-zone Europe/Helsinki --clear-notes --dry-run --json
+icalctl reminders update ID --list-id DESTINATION_LIST_ID --dry-run --json
+icalctl reminders complete ID \
+  --completed-at 2026-07-11T14:00:00+03:00 --dry-run --json
+icalctl reminders uncomplete ID --dry-run --json
+icalctl reminders delete ID
+```
+
+`--completed-at` requires RFC3339 with an explicit offset; omission uses the
+current instant. `--clear-time-zone` preserves timed due/start wall-clock fields
+while removing their EventKit timezone metadata. Lifecycle updates preserve
+alarms and recurrence rules until their dedicated mutation phase.
 
 ## Date And Time Input
 

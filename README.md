@@ -255,7 +255,9 @@ List/search responses deliberately leave alarm and recurrence counts null;
 Reminder creation previews use `reminder_dry_run` with `would_write: false`,
 the exact resolved list and source ids, list-selection provenance, date inputs,
 priority, field presence, planned notifications, duplicate policy, and planned
-operation.
+operation. Lifecycle previews use `reminder_mutation_dry_run` with before/result
+reminder objects and `changed_fields`; successful deletion uses
+`reminder_deleted` with the deleted reminder and list ids.
 
 The current JSON contract is schema generation 1. Consumers should dispatch on
 the top-level `type`, treat documented fields as stable, and tolerate additive
@@ -564,6 +566,51 @@ If all list selectors are omitted, EventKit's default reminder list is used.
 Inspect `reminders default-list --json` first and still confirm its exact title
 and id. A dry run does not replace user confirmation. Only after confirmation,
 repeat the same command without `--dry-run`.
+
+Patch an existing reminder by exact id or by a row from the latest reminder
+list/search. Omitted fields remain unchanged. Nullable fields use explicit
+clear flags, and `--priority none` clears priority:
+
+```sh
+icalctl reminders update REMINDER_ID \
+  --title "Submit final report" \
+  --due 2026-07-16T09:30 \
+  --time-zone Europe/Helsinki \
+  --clear-notes \
+  --priority high \
+  --dry-run --json
+```
+
+Use `--clear-due`, `--clear-start`, `--clear-time-zone`, `--clear-notes`,
+`--clear-url`, or `--clear-location` to remove those values. `--time-zone`
+sets timezone metadata on timezone-less supplied values and also applies to
+unchanged timed due/start fields. Explicit RFC3339 offsets remain authoritative.
+`--clear-time-zone` preserves wall-clock fields as floating EventKit components.
+Moving a reminder uses the same exact, writable list selection rules as creation:
+
+```sh
+icalctl reminders update REMINDER_ID --list-id DESTINATION_LIST_ID --dry-run --json
+```
+
+Complete and uncomplete support zero-write previews. `--completed-at` must be
+RFC3339 with an explicit offset; omission uses the current instant:
+
+```sh
+icalctl reminders complete REMINDER_ID \
+  --completed-at 2026-07-11T14:00:00+03:00 --dry-run --json
+icalctl reminders uncomplete REMINDER_ID --dry-run --json
+```
+
+Delete prompts for the word `delete` unless `--force` is supplied:
+
+```sh
+icalctl reminders delete REMINDER_ID
+```
+
+Before any live update, move, completion change, or deletion, inspect the
+exact reminder and target list, preview where supported, and obtain explicit
+confirmation. Update currently preserves reminder alarms and recurrence rules;
+their mutation belongs to the advanced reminders phase.
 
 The adapter uses only Apple's public EventKit API. Features that Reminders.app
 does not expose publicly through EventKit—flags, tags, sections, subtasks,

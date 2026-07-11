@@ -1,7 +1,7 @@
 use crate::models::{
     AlarmReport, BatchReport, CalendarReport, EventDraftReport, EventReport, JsonOutput,
     ReminderAlarmReport, ReminderDateKind, ReminderDateReport, ReminderDraftReport,
-    ReminderListReport, ReminderReport,
+    ReminderListReport, ReminderMutationDraftReport, ReminderReport,
 };
 use chrono::DateTime;
 
@@ -61,6 +61,10 @@ pub fn print_human_output(output: &JsonOutput) {
         JsonOutput::Reminders { reminders } => print_reminders(reminders),
         JsonOutput::Reminder { reminder } => print_reminder_detail(reminder),
         JsonOutput::ReminderDryRun { draft, .. } => print_reminder_dry_run(draft),
+        JsonOutput::ReminderMutationDryRun { draft, .. } => print_reminder_mutation_dry_run(draft),
+        JsonOutput::ReminderDeleted { deleted } => {
+            println!("Deleted reminder: {} [{}]", deleted.title, deleted.id);
+        }
         JsonOutput::Events { events } => print_events(events),
         JsonOutput::Event { event } => print_event_detail(event),
         JsonOutput::DryRun { draft, .. } => print_dry_run(draft),
@@ -69,6 +73,17 @@ pub fn print_human_output(output: &JsonOutput) {
             println!("Deleted event: {} [{}]", deleted.title, deleted.id);
         }
     }
+}
+
+fn print_reminder_mutation_dry_run(draft: &ReminderMutationDraftReport) {
+    println!("Dry run: no Reminders changes were made");
+    println!("operation: {}", draft.operation);
+    println!("reminder id: {}", draft.reminder_id);
+    println!("changed fields: {}", draft.changed_fields.join(", "));
+    println!("before:");
+    print_reminder_detail(&draft.before);
+    println!("result:");
+    print_reminder_detail(&draft.result);
 }
 
 fn print_reminder_dry_run(draft: &ReminderDraftReport) {

@@ -88,7 +88,7 @@ pub struct ReadReminderListSelectorArgs {
 
 #[derive(Debug, Args)]
 pub struct WriteReminderListSelectorArgs {
-    /// Reminder list title. Add defaults to EventKit's default reminder list.
+    /// Reminder list title. Add defaults to EventKit's default; update keeps the current list.
     #[arg(short = 'l', long = "list")]
     pub list: Option<String>,
 
@@ -478,6 +478,117 @@ pub enum RemindersCommand {
         /// Validate and print the resolved reminder without writing.
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// Patch an existing reminder; omitted fields remain unchanged.
+    Update {
+        /// EventKit reminder identifier, or row number from the last reminder list.
+        id: String,
+
+        /// Replace the reminder title.
+        #[arg(long)]
+        title: Option<String>,
+
+        #[command(flatten)]
+        list_selector: WriteReminderListSelectorArgs,
+
+        /// Replace the due date or datetime.
+        #[arg(long, value_name = "VALUE", conflicts_with = "clear_due")]
+        due: Option<String>,
+
+        /// Remove the due date.
+        #[arg(long)]
+        clear_due: bool,
+
+        /// Replace the start date or datetime.
+        #[arg(long, value_name = "VALUE", conflicts_with = "clear_start")]
+        start: Option<String>,
+
+        /// Remove the start date.
+        #[arg(long)]
+        clear_start: bool,
+
+        /// Set the IANA zone on timezone-less supplied or existing timed due/start values.
+        #[arg(
+            long = "time-zone",
+            value_name = "TZID",
+            conflicts_with = "clear_time_zone"
+        )]
+        time_zone: Option<String>,
+
+        /// Remove timezone metadata from supplied or existing timed due/start values.
+        #[arg(long)]
+        clear_time_zone: bool,
+
+        /// Replace reminder notes.
+        #[arg(long, conflicts_with_all = ["notes_file", "clear_notes"])]
+        notes: Option<String>,
+
+        /// Read replacement notes from a UTF-8 file, or stdin with -.
+        #[arg(long, value_name = "PATH", conflicts_with = "clear_notes")]
+        notes_file: Option<PathBuf>,
+
+        /// Remove reminder notes.
+        #[arg(long)]
+        clear_notes: bool,
+
+        /// Replace the reminder URL.
+        #[arg(long, conflicts_with = "clear_url")]
+        url: Option<String>,
+
+        /// Remove the reminder URL.
+        #[arg(long)]
+        clear_url: bool,
+
+        /// Replace the free-text reminder location.
+        #[arg(long, conflicts_with = "clear_location")]
+        location: Option<String>,
+
+        /// Remove the reminder location.
+        #[arg(long)]
+        clear_location: bool,
+
+        /// Replace reminder priority; use none to clear it.
+        #[arg(long, value_enum)]
+        priority: Option<ReminderPriorityArg>,
+
+        /// Validate and print the patch without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Mark a reminder complete.
+    Complete {
+        /// EventKit reminder identifier, or row number from the last reminder list.
+        id: String,
+
+        /// Completion instant; must be RFC3339 with an explicit UTC offset.
+        #[arg(long, value_name = "RFC3339")]
+        completed_at: Option<String>,
+
+        /// Validate and print the completion without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Mark a reminder incomplete and clear its completion date.
+    Uncomplete {
+        /// EventKit reminder identifier, or row number from the last reminder list.
+        id: String,
+
+        /// Validate and print the change without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Delete a reminder by exact EventKit identifier or cached row number.
+    Delete {
+        /// EventKit reminder identifier, or row number from the last reminder list.
+        id: String,
+
+        /// Delete without an interactive confirmation prompt.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -1216,6 +1327,129 @@ mod tests {
                 "inline",
                 "--notes-file",
                 "notes.txt",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn reminder_update_parses_patch_clear_move_and_dry_run_flags() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "reminders",
+            "update",
+            "2",
+            "--title",
+            "Revised task",
+            "--list-id",
+            "LIST-2",
+            "--due",
+            "2026-07-15T14:30",
+            "--time-zone",
+            "Europe/Helsinki",
+            "--clear-start",
+            "--clear-notes",
+            "--clear-url",
+            "--location",
+            "Office",
+            "--priority",
+            "none",
+            "--dry-run",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Reminders {
+                command: RemindersCommand::Update {
+                    id,
+                    title: Some(title),
+                    list_selector: WriteReminderListSelectorArgs {
+                        list_id: Some(list_id),
+                        ..
+                    },
+                    due: Some(due),
+                    time_zone: Some(time_zone),
+                    clear_start: true,
+                    clear_notes: true,
+                    clear_url: true,
+                    location: Some(location),
+                    priority: Some(ReminderPriorityArg::None),
+                    dry_run: true,
+                    ..
+                }
+            } if id == "2"
+                && title == "Revised task"
+                && list_id == "LIST-2"
+                && due == "2026-07-15T14:30"
+                && time_zone == "Europe/Helsinki"
+                && location == "Office"
+        ));
+    }
+
+    #[test]
+    fn reminder_lifecycle_commands_parse() {
+        assert!(matches!(
+            Cli::try_parse_from([
+                "icalctl",
+                "reminders",
+                "complete",
+                "ID",
+                "--completed-at",
+                "2026-07-11T14:00:00+03:00",
+                "--dry-run",
+            ])
+            .unwrap()
+            .command,
+            Command::Reminders {
+                command: RemindersCommand::Complete {
+                    id,
+                    completed_at: Some(completed_at),
+                    dry_run: true,
+                }
+            } if id == "ID" && completed_at == "2026-07-11T14:00:00+03:00"
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["icalctl", "reminders", "uncomplete", "ID", "--dry-run"])
+                .unwrap()
+                .command,
+            Command::Reminders {
+                command: RemindersCommand::Uncomplete { id, dry_run: true }
+            } if id == "ID"
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["icalctl", "reminders", "delete", "ID", "--force"])
+                .unwrap()
+                .command,
+            Command::Reminders {
+                command: RemindersCommand::Delete { id, force: true }
+            } if id == "ID"
+        ));
+    }
+
+    #[test]
+    fn reminder_update_rejects_conflicting_set_and_clear_flags() {
+        assert!(
+            Cli::try_parse_from([
+                "icalctl",
+                "reminders",
+                "update",
+                "ID",
+                "--due",
+                "2026-07-15",
+                "--clear-due",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "icalctl",
+                "reminders",
+                "update",
+                "ID",
+                "--notes",
+                "text",
+                "--clear-notes",
             ])
             .is_err()
         );

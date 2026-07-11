@@ -7,10 +7,10 @@ use crate::dates::{
     parse_end_datetime, parse_start_datetime, parse_start_datetime_in_time_zone, validate_time_zone,
 };
 use crate::models::{
-    JsonOutput, ReminderAlarmReport, ReminderDateKind, ReminderDateReport, ReminderDraftReport,
-    ReminderListReport, ReminderListSelection, ReminderNotificationReport, ReminderPriority,
-    ReminderRecurrenceEndReport, ReminderRecurrenceReport, ReminderReport,
-    ReminderStructuredLocationReport, StatusReport,
+    JsonOutput, ReminderAlarmReport, ReminderDateKind, ReminderDateReport, ReminderDeletedReport,
+    ReminderDraftReport, ReminderListReport, ReminderListSelection, ReminderMutationDraftReport,
+    ReminderNotificationReport, ReminderPriority, ReminderRecurrenceEndReport,
+    ReminderRecurrenceReport, ReminderReport, ReminderStructuredLocationReport, StatusReport,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use block2::RcBlock;
@@ -32,6 +32,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::fs;
+use std::io::Write as IoWrite;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -50,6 +51,13 @@ trait ReminderStore {
     fn get(&self, id: &str) -> Result<ReminderReport>;
     fn create(&self, draft: &ReminderSaveDraft) -> Result<ReminderReport>;
     fn update_add_fields(&self, id: &str, patch: &ReminderAddPatch) -> Result<ReminderReport>;
+    fn update(&self, id: &str, patch: &ReminderLifecyclePatch) -> Result<ReminderReport>;
+    fn set_completion(
+        &self,
+        id: &str,
+        completed_at: Option<DateTime<Utc>>,
+    ) -> Result<ReminderReport>;
+    fn delete(&self, id: &str) -> Result<()>;
 }
 
 fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Result<JsonOutput> {
@@ -123,6 +131,55 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
                 dry_run,
             },
         ),
+        RemindersCommand::Update {
+            id,
+            title,
+            list_selector,
+            due,
+            clear_due,
+            start,
+            clear_start,
+            time_zone,
+            clear_time_zone,
+            notes,
+            notes_file,
+            clear_notes,
+            url,
+            clear_url,
+            location,
+            clear_location,
+            priority,
+            dry_run,
+        } => update_reminder(
+            store,
+            UpdateReminderCommand {
+                id,
+                title,
+                list_selector,
+                due,
+                clear_due,
+                start,
+                clear_start,
+                time_zone,
+                clear_time_zone,
+                notes,
+                notes_file,
+                clear_notes,
+                url,
+                clear_url,
+                location,
+                clear_location,
+                priority,
+                dry_run,
+            },
+        ),
+        RemindersCommand::Complete {
+            id,
+            completed_at,
+            dry_run,
+        } => complete_reminder(store, &id, completed_at.as_deref(), dry_run),
+        RemindersCommand::Uncomplete { id, dry_run } => uncomplete_reminder(store, &id, dry_run),
+        RemindersCommand::Delete { id, force } => delete_reminder(store, &id, force),
     }
 }
 
@@ -165,6 +222,39 @@ struct ReminderAddPatch {
     url: Option<String>,
     priority_value: Option<usize>,
     notifications: Option<Vec<ParsedReminderNotification>>,
+}
+
+struct UpdateReminderCommand {
+    id: String,
+    title: Option<String>,
+    list_selector: WriteReminderListSelectorArgs,
+    due: Option<String>,
+    clear_due: bool,
+    start: Option<String>,
+    clear_start: bool,
+    time_zone: Option<String>,
+    clear_time_zone: bool,
+    notes: Option<String>,
+    notes_file: Option<PathBuf>,
+    clear_notes: bool,
+    url: Option<String>,
+    clear_url: bool,
+    location: Option<String>,
+    clear_location: bool,
+    priority: Option<ReminderPriorityArg>,
+    dry_run: bool,
+}
+
+#[derive(Clone, Default)]
+struct ReminderLifecyclePatch {
+    title: Option<String>,
+    list_id: Option<String>,
+    due: Option<Option<ParsedReminderDate>>,
+    start: Option<Option<ParsedReminderDate>>,
+    notes: Option<Option<String>>,
+    location: Option<Option<String>>,
+    url: Option<Option<String>>,
+    priority_value: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -371,6 +461,405 @@ fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Resu
     Ok(JsonOutput::Reminder {
         reminder: Box::new(reminder),
     })
+}
+
+fn update_reminder(
+    store: &impl ReminderStore,
+    command: UpdateReminderCommand,
+) -> Result<JsonOutput> {
+    store.ensure_authorized()?;
+    let id = resolve_reminder_ref(&command.id)?;
+    let before = store.get(&id)?;
+    ensure_reminder_writable(&before, "update")?;
+
+    if command
+        .title
+        .as_ref()
+        .is_some_and(|title| title.trim().is_empty())
+    {
+        bail!("reminder title must not be empty");
+    }
+    if let Some(time_zone) = &command.time_zone {
+        validate_time_zone(time_zone)?;
+    }
+    if let Some(url) = &command.url {
+        validate_reminder_url(url)?;
+    }
+
+    let notes = match command.notes_file.as_deref() {
+        Some(path) => Some(read_notes_file(path)?),
+        None => command.notes.clone(),
+    };
+    let mut due = command
+        .due
+        .as_deref()
+        .map(|value| parse_reminder_date(value, command.time_zone.as_deref()))
+        .transpose()
+        .context("invalid reminder due value")?;
+    let mut start = command
+        .start
+        .as_deref()
+        .map(|value| parse_reminder_date(value, command.time_zone.as_deref()))
+        .transpose()
+        .context("invalid reminder start value")?;
+    if command.clear_time_zone {
+        due = due.map(clear_parsed_time_zone).transpose()?;
+        start = start.map(clear_parsed_time_zone).transpose()?;
+    }
+
+    let mut patch = ReminderLifecyclePatch {
+        title: command.title.clone(),
+        due: if command.clear_due {
+            Some(None)
+        } else {
+            due.map(Some)
+        },
+        start: if command.clear_start {
+            Some(None)
+        } else {
+            start.map(Some)
+        },
+        notes: if command.clear_notes {
+            Some(None)
+        } else {
+            notes.map(Some)
+        },
+        location: if command.clear_location {
+            Some(None)
+        } else {
+            command.location.clone().map(Some)
+        },
+        url: if command.clear_url {
+            Some(None)
+        } else {
+            command.url.clone().map(Some)
+        },
+        priority_value: command.priority.map(priority_arg_value),
+        ..Default::default()
+    };
+    let mut moved_list = None;
+    if !write_list_selector_is_empty(&command.list_selector) {
+        let lists = store.lists()?;
+        let (list, _) = resolve_write_list(&lists, None, &command.list_selector)?;
+        patch.list_id = Some(list.id.clone());
+        moved_list = Some(list);
+    }
+
+    if command.time_zone.is_some() || command.clear_time_zone {
+        rezone_unchanged_dates(
+            &before,
+            &mut patch,
+            command.time_zone.as_deref(),
+            command.clear_time_zone,
+        )?;
+        let result = preview_lifecycle_patch(&before, &patch, moved_list.as_ref());
+        let has_timed_value = [result.due.as_ref(), result.start.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|value| value.kind == ReminderDateKind::Datetime);
+        if !has_timed_value {
+            bail!("--time-zone and --clear-time-zone require a timed due or start value");
+        }
+    }
+
+    let changed_fields = lifecycle_changed_fields(&patch);
+    if changed_fields.is_empty() {
+        bail!("reminder update requires at least one field change");
+    }
+    let mut result = preview_lifecycle_patch(&before, &patch, moved_list.as_ref());
+    result.due_input = command.due.clone();
+    result.start_input = command.start.clone();
+    result.write_action = Some("would_update".to_string());
+    if command.dry_run {
+        return Ok(reminder_mutation_dry_run(
+            "update",
+            changed_fields,
+            before,
+            result,
+        ));
+    }
+
+    let mut reminder = store.update(&id, &patch)?;
+    reminder.write_action = Some("updated".to_string());
+    reminder.due_input = command.due;
+    reminder.start_input = command.start;
+    if moved_list.is_some() {
+        reminder.list_selection = Some(ReminderListSelection::Explicit);
+    }
+    Ok(JsonOutput::Reminder {
+        reminder: Box::new(reminder),
+    })
+}
+
+fn complete_reminder(
+    store: &impl ReminderStore,
+    reference: &str,
+    completed_at: Option<&str>,
+    dry_run: bool,
+) -> Result<JsonOutput> {
+    store.ensure_authorized()?;
+    let id = resolve_reminder_ref(reference)?;
+    let before = store.get(&id)?;
+    ensure_reminder_writable(&before, "complete")?;
+    let completed_at = match completed_at {
+        Some(value) => DateTime::parse_from_rfc3339(value)
+            .with_context(|| {
+                "--completed-at must be RFC3339 with an explicit UTC offset, for example 2026-07-11T14:00:00+03:00"
+            })?
+            .with_timezone(&Utc),
+        None => Utc::now(),
+    };
+    let mut result = before.clone();
+    result.completed = true;
+    result.completion_date = Some(completed_at.to_rfc3339());
+    result.write_action = Some("would_complete".to_string());
+    if dry_run {
+        return Ok(reminder_mutation_dry_run(
+            "complete",
+            vec!["completed".to_string(), "completion_date".to_string()],
+            before,
+            result,
+        ));
+    }
+    let mut reminder = store.set_completion(&id, Some(completed_at))?;
+    reminder.write_action = Some("completed".to_string());
+    Ok(JsonOutput::Reminder {
+        reminder: Box::new(reminder),
+    })
+}
+
+fn uncomplete_reminder(
+    store: &impl ReminderStore,
+    reference: &str,
+    dry_run: bool,
+) -> Result<JsonOutput> {
+    store.ensure_authorized()?;
+    let id = resolve_reminder_ref(reference)?;
+    let before = store.get(&id)?;
+    ensure_reminder_writable(&before, "uncomplete")?;
+    let mut result = before.clone();
+    result.completed = false;
+    result.completion_date = None;
+    result.write_action = Some("would_uncomplete".to_string());
+    if dry_run {
+        return Ok(reminder_mutation_dry_run(
+            "uncomplete",
+            vec!["completed".to_string(), "completion_date".to_string()],
+            before,
+            result,
+        ));
+    }
+    let mut reminder = store.set_completion(&id, None)?;
+    reminder.write_action = Some("uncompleted".to_string());
+    Ok(JsonOutput::Reminder {
+        reminder: Box::new(reminder),
+    })
+}
+
+fn delete_reminder(store: &impl ReminderStore, reference: &str, force: bool) -> Result<JsonOutput> {
+    store.ensure_authorized()?;
+    let id = resolve_reminder_ref(reference)?;
+    let reminder = store.get(&id)?;
+    ensure_reminder_writable(&reminder, "delete")?;
+    if !force {
+        confirm_reminder_delete(&reminder)?;
+    }
+    store.delete(&id)?;
+    Ok(JsonOutput::ReminderDeleted {
+        deleted: ReminderDeletedReport {
+            id,
+            title: reminder.title,
+            list: reminder.list,
+            list_id: reminder.list_id,
+        },
+    })
+}
+
+fn reminder_mutation_dry_run(
+    operation: &str,
+    changed_fields: Vec<String>,
+    before: ReminderReport,
+    result: ReminderReport,
+) -> JsonOutput {
+    JsonOutput::ReminderMutationDryRun {
+        would_write: false,
+        draft: Box::new(ReminderMutationDraftReport {
+            operation: operation.to_string(),
+            reminder_id: before.id.clone(),
+            changed_fields,
+            before: Box::new(before),
+            result: Box::new(result),
+        }),
+    }
+}
+
+fn ensure_reminder_writable(reminder: &ReminderReport, operation: &str) -> Result<()> {
+    let list = reminder.list.as_deref().unwrap_or("unknown list");
+    let list_id = reminder.list_id.as_deref().unwrap_or("unknown id");
+    match reminder.allows_list_modifications {
+        Some(true) => Ok(()),
+        Some(false) => bail!("cannot {operation} reminder in read-only list {list} [{list_id}]"),
+        None => bail!(
+            "cannot {operation} reminder because its list is unavailable or writability is unknown: {list} [{list_id}]"
+        ),
+    }
+}
+
+fn confirm_reminder_delete(reminder: &ReminderReport) -> Result<()> {
+    let mut stderr = io::stderr();
+    let list = reminder.list.as_deref().unwrap_or("unknown list");
+    writeln!(
+        stderr,
+        "Delete reminder \"{}\" from {} [{}]?",
+        reminder.title,
+        list,
+        reminder.list_id.as_deref().unwrap_or("unknown id")
+    )?;
+    write!(stderr, "Type delete to confirm: ")?;
+    stderr.flush()?;
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .context("failed to read delete confirmation")?;
+    if input.trim() == "delete" {
+        Ok(())
+    } else {
+        bail!("delete cancelled")
+    }
+}
+
+fn lifecycle_changed_fields(patch: &ReminderLifecyclePatch) -> Vec<String> {
+    [
+        (patch.title.is_some(), "title"),
+        (patch.list_id.is_some(), "list"),
+        (patch.due.is_some(), "due"),
+        (patch.start.is_some(), "start"),
+        (patch.notes.is_some(), "notes"),
+        (patch.location.is_some(), "location"),
+        (patch.url.is_some(), "url"),
+        (patch.priority_value.is_some(), "priority"),
+    ]
+    .into_iter()
+    .filter(|(changed, _)| *changed)
+    .map(|(_, name)| name.to_string())
+    .collect()
+}
+
+fn preview_lifecycle_patch(
+    before: &ReminderReport,
+    patch: &ReminderLifecyclePatch,
+    moved_list: Option<&ReminderListReport>,
+) -> ReminderReport {
+    let mut result = before.clone();
+    if let Some(title) = &patch.title {
+        result.title = title.clone();
+    }
+    if let Some(list) = moved_list {
+        result.list = Some(list.title.clone());
+        result.list_id = Some(list.id.clone());
+        result.list_source = list.source.clone();
+        result.list_source_id = list.source_id.clone();
+        result.list_type = Some(list.list_type.clone());
+        result.allows_list_modifications = Some(list.allows_modifications);
+        result.list_selection = Some(ReminderListSelection::Explicit);
+    }
+    if let Some(due) = &patch.due {
+        result.due = due.as_ref().map(|value| value.report.clone());
+        result.due_input = due.as_ref().map(|value| value.input.clone());
+    }
+    if let Some(start) = &patch.start {
+        result.start = start.as_ref().map(|value| value.report.clone());
+        result.start_input = start.as_ref().map(|value| value.input.clone());
+    }
+    if let Some(notes) = &patch.notes {
+        result.notes = notes.clone();
+        result.has_notes = notes.is_some();
+    }
+    if let Some(location) = &patch.location {
+        result.location = location.clone();
+    }
+    if let Some(url) = &patch.url {
+        result.url = url.clone();
+        result.has_url = url.is_some();
+    }
+    if let Some(priority) = patch.priority_value {
+        result.priority_value = priority;
+        result.priority = priority_name(priority);
+    }
+    result
+}
+
+fn clear_parsed_time_zone(value: ParsedReminderDate) -> Result<ParsedReminderDate> {
+    if value.report.kind == ReminderDateKind::Date {
+        return Ok(value);
+    }
+    let local = value
+        .report
+        .local
+        .as_deref()
+        .context("timed reminder value has no local components")?;
+    floating_reminder_date(local)
+}
+
+fn floating_reminder_date(input: &str) -> Result<ParsedReminderDate> {
+    let local = parse_naive_datetime(input)?;
+    Ok(ParsedReminderDate {
+        input: input.to_string(),
+        report: ReminderDateReport {
+            kind: ReminderDateKind::Datetime,
+            date: None,
+            local: Some(local.format("%Y-%m-%dT%H:%M:%S").to_string()),
+            normalized: None,
+            utc: None,
+            time_zone: None,
+        },
+        components: ReminderDateComponents {
+            year: local.year(),
+            month: local.month(),
+            day: local.day(),
+            hour: Some(local.hour()),
+            minute: Some(local.minute()),
+            second: Some(local.second()),
+            time_zone: None,
+        },
+    })
+}
+
+fn rezone_unchanged_dates(
+    before: &ReminderReport,
+    patch: &mut ReminderLifecyclePatch,
+    time_zone: Option<&str>,
+    clear: bool,
+) -> Result<()> {
+    if patch.due.is_none()
+        && let Some(due) = &before.due
+        && due.kind == ReminderDateKind::Datetime
+    {
+        let local = due
+            .local
+            .as_deref()
+            .context("timed due value has no local components")?;
+        patch.due = Some(Some(if clear {
+            floating_reminder_date(local)?
+        } else {
+            parse_reminder_date(local, time_zone)?
+        }));
+    }
+    if patch.start.is_none()
+        && let Some(start) = &before.start
+        && start.kind == ReminderDateKind::Datetime
+    {
+        let local = start
+            .local
+            .as_deref()
+            .context("timed start value has no local components")?;
+        patch.start = Some(Some(if clear {
+            floating_reminder_date(local)?
+        } else {
+            parse_reminder_date(local, time_zone)?
+        }));
+    }
+    Ok(())
 }
 
 fn write_list_selector_is_empty(selector: &WriteReminderListSelectorArgs) -> bool {
@@ -1223,6 +1712,107 @@ impl ReminderStore for EventKitReminderStore {
         self.save_reminder(&reminder)?;
         Ok(reminder_to_report(&reminder, true))
     }
+
+    fn update(&self, id: &str, patch: &ReminderLifecyclePatch) -> Result<ReminderReport> {
+        self.ensure_authorized()?;
+        let reminder = self.find_reminder(id)?;
+        if !unsafe { reminder.calendar() }
+            .as_ref()
+            .is_some_and(|list| unsafe { list.allowsContentModifications() })
+        {
+            bail!("the reminder's current list is read-only");
+        }
+        if let Some(title) = &patch.title {
+            let title = NSString::from_str(title);
+            unsafe { reminder.setTitle(Some(&title)) };
+        }
+        if let Some(list_id) = &patch.list_id {
+            let list_id = NSString::from_str(list_id);
+            let list = unsafe { self.store.calendarWithIdentifier(&list_id) }
+                .context("selected reminder list is no longer available")?;
+            if !unsafe { list.allowsContentModifications() } {
+                bail!("selected reminder list is read-only");
+            }
+            unsafe { reminder.setCalendar(Some(&list)) };
+        }
+        if let Some(due) = &patch.due {
+            let components = due
+                .as_ref()
+                .map(|value| reminder_date_components(&value.components))
+                .transpose()?;
+            unsafe { reminder.setDueDateComponents(components.as_deref()) };
+        }
+        if let Some(start) = &patch.start {
+            let components = start
+                .as_ref()
+                .map(|value| reminder_date_components(&value.components))
+                .transpose()?;
+            unsafe { reminder.setStartDateComponents(components.as_deref()) };
+        }
+        if let Some(notes) = &patch.notes {
+            let notes = notes.as_ref().map(|value| NSString::from_str(value));
+            unsafe { reminder.setNotes(notes.as_deref()) };
+        }
+        if let Some(location) = &patch.location {
+            let location = location.as_ref().map(|value| NSString::from_str(value));
+            unsafe { reminder.setLocation(location.as_deref()) };
+        }
+        if let Some(url) = &patch.url {
+            match url {
+                Some(url) => set_reminder_url(&reminder, url)?,
+                None => unsafe { reminder.setURL(None) },
+            }
+        }
+        if let Some(priority) = patch.priority_value {
+            unsafe { reminder.setPriority(priority) };
+        }
+        self.save_reminder(&reminder)?;
+        Ok(reminder_to_report(&reminder, true))
+    }
+
+    fn set_completion(
+        &self,
+        id: &str,
+        completed_at: Option<DateTime<Utc>>,
+    ) -> Result<ReminderReport> {
+        self.ensure_authorized()?;
+        let reminder = self.find_reminder(id)?;
+        if !unsafe { reminder.calendar() }
+            .as_ref()
+            .is_some_and(|list| unsafe { list.allowsContentModifications() })
+        {
+            bail!("the reminder's current list is read-only");
+        }
+        match completed_at {
+            Some(completed_at) => {
+                let date = NSDate::dateWithTimeIntervalSince1970(
+                    completed_at.timestamp_millis() as f64 / 1_000.0,
+                );
+                unsafe { reminder.setCompletionDate(Some(&date)) };
+            }
+            None => unsafe { reminder.setCompletionDate(None) },
+        }
+        self.save_reminder(&reminder)?;
+        Ok(reminder_to_report(&reminder, true))
+    }
+
+    fn delete(&self, id: &str) -> Result<()> {
+        self.ensure_authorized()?;
+        let reminder = self.find_reminder(id)?;
+        if !unsafe { reminder.calendar() }
+            .as_ref()
+            .is_some_and(|list| unsafe { list.allowsContentModifications() })
+        {
+            bail!("the reminder's current list is read-only");
+        }
+        unsafe {
+            self.store
+                .removeReminder_commit_error(&reminder, true)
+                .map_err(|error| anyhow!("failed to delete reminder: {error:?}"))?;
+            self.store.refreshSourcesIfNecessary();
+        }
+        Ok(())
+    }
 }
 
 impl EventKitReminderStore {
@@ -1678,6 +2268,9 @@ mod tests {
         reminders: RefCell<Vec<ReminderReport>>,
         creates: Cell<usize>,
         updates: Cell<usize>,
+        lifecycle_updates: Cell<usize>,
+        completion_updates: Cell<usize>,
+        deletes: Cell<usize>,
         last_patch: RefCell<Option<ReminderAddPatch>>,
     }
 
@@ -1691,6 +2284,9 @@ mod tests {
                 reminders: RefCell::new(Vec::new()),
                 creates: Cell::new(0),
                 updates: Cell::new(0),
+                lifecycle_updates: Cell::new(0),
+                completion_updates: Cell::new(0),
+                deletes: Cell::new(0),
                 last_patch: RefCell::new(None),
             }
         }
@@ -1780,6 +2376,49 @@ mod tests {
                 report.alarm_count = Some(notifications.len());
             }
             Ok(report)
+        }
+
+        fn update(&self, id: &str, patch: &ReminderLifecyclePatch) -> Result<ReminderReport> {
+            self.lifecycle_updates.set(self.lifecycle_updates.get() + 1);
+            let mut reminders = self.reminders.borrow_mut();
+            let reminder = reminders
+                .iter_mut()
+                .find(|reminder| reminder.id == id)
+                .context("fake reminder not found")?;
+            let moved_list = patch
+                .list_id
+                .as_ref()
+                .and_then(|id| self.lists.iter().find(|list| &list.id == id));
+            *reminder = preview_lifecycle_patch(reminder, patch, moved_list);
+            Ok(reminder.clone())
+        }
+
+        fn set_completion(
+            &self,
+            id: &str,
+            completed_at: Option<DateTime<Utc>>,
+        ) -> Result<ReminderReport> {
+            self.completion_updates
+                .set(self.completion_updates.get() + 1);
+            let mut reminders = self.reminders.borrow_mut();
+            let reminder = reminders
+                .iter_mut()
+                .find(|reminder| reminder.id == id)
+                .context("fake reminder not found")?;
+            reminder.completed = completed_at.is_some();
+            reminder.completion_date = completed_at.map(|value| value.to_rfc3339());
+            Ok(reminder.clone())
+        }
+
+        fn delete(&self, id: &str) -> Result<()> {
+            self.deletes.set(self.deletes.get() + 1);
+            let mut reminders = self.reminders.borrow_mut();
+            let initial = reminders.len();
+            reminders.retain(|reminder| reminder.id != id);
+            if reminders.len() == initial {
+                bail!("fake reminder not found");
+            }
+            Ok(())
         }
     }
 
@@ -2336,5 +2975,301 @@ mod tests {
         assert!(error.contains("ONE, TWO"));
         assert_eq!(store.creates.get(), 0);
         assert_eq!(store.updates.get(), 0);
+    }
+
+    fn update_command(id: &str) -> UpdateReminderCommand {
+        UpdateReminderCommand {
+            id: id.to_string(),
+            title: None,
+            list_selector: write_selector(None),
+            due: None,
+            clear_due: false,
+            start: None,
+            clear_start: false,
+            time_zone: None,
+            clear_time_zone: false,
+            notes: None,
+            notes_file: None,
+            clear_notes: false,
+            url: None,
+            clear_url: false,
+            location: None,
+            clear_location: false,
+            priority: None,
+            dry_run: true,
+        }
+    }
+
+    #[test]
+    fn lifecycle_update_dry_run_previews_patch_and_performs_zero_writes() {
+        let mut store = FakeStore::new();
+        store.lists.push(list("B", "Work", "Exchange", "S2"));
+        let mut existing = reminder("R1", "Old", false, Some("2026-07-15"));
+        existing.notes = Some("old notes".to_string());
+        existing.has_notes = true;
+        existing.url = Some("https://example.com/old".to_string());
+        existing.has_url = true;
+        existing.alarm_count = Some(2);
+        store.reminders.borrow_mut().push(existing);
+
+        let mut command = update_command("R1");
+        command.title = Some("New".to_string());
+        command.list_selector = write_selector(Some("B"));
+        command.due = Some("2026-07-16T09:30".to_string());
+        command.time_zone = Some("Europe/Helsinki".to_string());
+        command.clear_notes = true;
+        command.clear_url = true;
+        command.priority = Some(ReminderPriorityArg::High);
+
+        let output = update_reminder(&store, command).unwrap();
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["type"], "reminder_mutation_dry_run");
+        assert_eq!(json["would_write"], false);
+        assert_eq!(json["draft"]["result"]["list_id"], "B");
+        let JsonOutput::ReminderMutationDryRun { would_write, draft } = output else {
+            panic!("expected reminder mutation dry run");
+        };
+        assert!(!would_write);
+        assert_eq!(draft.operation, "update");
+        assert_eq!(draft.result.title, "New");
+        assert_eq!(draft.result.list_id.as_deref(), Some("B"));
+        assert_eq!(draft.result.list.as_deref(), Some("Work"));
+        assert!(draft.result.notes.is_none());
+        assert!(draft.result.url.is_none());
+        assert_eq!(draft.result.priority, ReminderPriority::High);
+        assert_eq!(draft.result.alarm_count, Some(2));
+        assert_eq!(
+            draft
+                .result
+                .due
+                .as_ref()
+                .and_then(|due| due.time_zone.as_deref()),
+            Some("Europe/Helsinki")
+        );
+        assert_eq!(store.lifecycle_updates.get(), 0);
+        assert_eq!(store.completion_updates.get(), 0);
+        assert_eq!(store.deletes.get(), 0);
+    }
+
+    #[test]
+    fn lifecycle_update_live_clears_dates_and_preserves_omitted_fields() {
+        let store = FakeStore::new();
+        let mut existing = reminder("R1", "Task", false, Some("2026-07-15"));
+        existing.start = Some(parse_reminder_date("2026-07-14", None).unwrap().report);
+        existing.notes = Some("keep me".to_string());
+        existing.has_notes = true;
+        store.reminders.borrow_mut().push(existing);
+
+        let mut command = update_command("R1");
+        command.clear_due = true;
+        command.clear_start = true;
+        command.location = Some("Office".to_string());
+        command.dry_run = false;
+        let output = update_reminder(&store, command).unwrap();
+        let JsonOutput::Reminder { reminder } = output else {
+            panic!("expected reminder result");
+        };
+        assert!(reminder.due.is_none());
+        assert!(reminder.start.is_none());
+        assert_eq!(reminder.notes.as_deref(), Some("keep me"));
+        assert_eq!(reminder.location.as_deref(), Some("Office"));
+        assert_eq!(reminder.write_action.as_deref(), Some("updated"));
+        assert_eq!(store.lifecycle_updates.get(), 1);
+    }
+
+    #[test]
+    fn lifecycle_update_can_set_and_clear_existing_timezone_metadata() {
+        let store = FakeStore::new();
+        let mut existing = reminder("R1", "Task", false, None);
+        existing.due = Some(
+            parse_reminder_date("2026-07-15T14:30", None)
+                .unwrap()
+                .report,
+        );
+        store.reminders.borrow_mut().push(existing);
+
+        let mut set_zone = update_command("R1");
+        set_zone.time_zone = Some("Europe/Helsinki".to_string());
+        set_zone.dry_run = false;
+        let output = update_reminder(&store, set_zone).unwrap();
+        let JsonOutput::Reminder { reminder } = output else {
+            panic!("expected reminder result");
+        };
+        assert_eq!(reminder.due_input, None);
+        assert_eq!(
+            store.reminders.borrow()[0]
+                .due
+                .as_ref()
+                .and_then(|due| due.time_zone.as_deref()),
+            Some("Europe/Helsinki")
+        );
+
+        let mut clear_zone = update_command("R1");
+        clear_zone.clear_time_zone = true;
+        clear_zone.dry_run = false;
+        update_reminder(&store, clear_zone).unwrap();
+        assert!(
+            store.reminders.borrow()[0]
+                .due
+                .as_ref()
+                .and_then(|due| due.time_zone.as_ref())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn lifecycle_timezone_clear_does_not_resolve_floating_wall_clock_through_local_dst() {
+        let store = FakeStore::new();
+        let mut existing = reminder("R1", "Task", false, None);
+        existing.due = Some(ReminderDateReport {
+            kind: ReminderDateKind::Datetime,
+            date: None,
+            local: Some("2026-03-29T03:30:00".to_string()),
+            normalized: Some("2026-03-29T03:30:00+09:00".to_string()),
+            utc: Some("2026-03-28T18:30:00+00:00".to_string()),
+            time_zone: Some("Asia/Tokyo".to_string()),
+        });
+        store.reminders.borrow_mut().push(existing);
+
+        let mut command = update_command("R1");
+        command.clear_time_zone = true;
+        let output = update_reminder(&store, command).unwrap();
+        let JsonOutput::ReminderMutationDryRun { draft, .. } = output else {
+            panic!("expected reminder mutation dry run");
+        };
+        let due = draft.result.due.as_ref().unwrap();
+        assert_eq!(due.local.as_deref(), Some("2026-03-29T03:30:00"));
+        assert!(due.time_zone.is_none());
+        assert!(due.normalized.is_none());
+        assert!(due.utc.is_none());
+        assert!(draft.result.due_input.is_none());
+        assert_eq!(store.lifecycle_updates.get(), 0);
+    }
+
+    #[test]
+    fn lifecycle_update_explicit_offset_wins_and_live_echoes_user_input() {
+        let store = FakeStore::new();
+        store
+            .reminders
+            .borrow_mut()
+            .push(reminder("R1", "Task", false, None));
+        let input = "2026-07-16T09:30:00+08:00";
+        let mut dry_run = update_command("R1");
+        dry_run.due = Some(input.to_string());
+        dry_run.time_zone = Some("Europe/Helsinki".to_string());
+        let output = update_reminder(&store, dry_run).unwrap();
+        let JsonOutput::ReminderMutationDryRun { draft, .. } = output else {
+            panic!("expected reminder mutation dry run");
+        };
+        assert_eq!(draft.result.due_input.as_deref(), Some(input));
+
+        let mut command = update_command("R1");
+        command.due = Some(input.to_string());
+        command.time_zone = Some("Europe/Helsinki".to_string());
+        command.dry_run = false;
+
+        let output = update_reminder(&store, command).unwrap();
+        let JsonOutput::Reminder { reminder } = output else {
+            panic!("expected reminder result");
+        };
+        assert_eq!(reminder.due_input.as_deref(), Some(input));
+        let due = reminder.due.as_ref().unwrap();
+        assert_eq!(due.time_zone.as_deref(), Some("+08:00"));
+        assert_eq!(due.utc.as_deref(), Some("2026-07-16T01:30:00+00:00"));
+    }
+
+    #[test]
+    fn complete_and_uncomplete_preserve_explicit_timestamp_and_dry_run_is_safe() {
+        let store = FakeStore::new();
+        store
+            .reminders
+            .borrow_mut()
+            .push(reminder("R1", "Task", false, None));
+
+        let dry_run =
+            complete_reminder(&store, "R1", Some("2026-07-11T14:00:00+03:00"), true).unwrap();
+        let JsonOutput::ReminderMutationDryRun { draft, .. } = dry_run else {
+            panic!("expected completion dry run");
+        };
+        assert!(draft.result.completed);
+        assert_eq!(
+            draft.result.completion_date.as_deref(),
+            Some("2026-07-11T11:00:00+00:00")
+        );
+        assert_eq!(store.completion_updates.get(), 0);
+
+        complete_reminder(&store, "R1", Some("2026-07-11T14:00:00+03:00"), false).unwrap();
+        assert!(store.reminders.borrow()[0].completed);
+        assert_eq!(store.completion_updates.get(), 1);
+
+        uncomplete_reminder(&store, "R1", false).unwrap();
+        assert!(!store.reminders.borrow()[0].completed);
+        assert!(store.reminders.borrow()[0].completion_date.is_none());
+        assert_eq!(store.completion_updates.get(), 2);
+    }
+
+    #[test]
+    fn completion_rejects_timestamp_without_offset_before_writing() {
+        let store = FakeStore::new();
+        store
+            .reminders
+            .borrow_mut()
+            .push(reminder("R1", "Task", false, None));
+        let error = complete_reminder(&store, "R1", Some("2026-07-11T14:00:00"), false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("explicit UTC offset"));
+        assert_eq!(store.completion_updates.get(), 0);
+    }
+
+    #[test]
+    fn forced_delete_removes_exact_reminder() {
+        let store = FakeStore::new();
+        store
+            .reminders
+            .borrow_mut()
+            .push(reminder("R1", "Task", false, None));
+        let output = delete_reminder(&store, "R1", true).unwrap();
+        let JsonOutput::ReminderDeleted { deleted } = output else {
+            panic!("expected reminder deletion report");
+        };
+        assert_eq!(deleted.id, "R1");
+        assert_eq!(deleted.list_id.as_deref(), Some("A"));
+        assert!(store.reminders.borrow().is_empty());
+        assert_eq!(store.deletes.get(), 1);
+    }
+
+    #[test]
+    fn lifecycle_rejects_noop_and_read_only_mutations() {
+        let store = FakeStore::new();
+        store
+            .reminders
+            .borrow_mut()
+            .push(reminder("R1", "Task", false, None));
+        assert!(
+            update_reminder(&store, update_command("R1"))
+                .unwrap_err()
+                .to_string()
+                .contains("at least one field change")
+        );
+
+        store.reminders.borrow_mut()[0].allows_list_modifications = Some(false);
+        assert!(
+            uncomplete_reminder(&store, "R1", true)
+                .unwrap_err()
+                .to_string()
+                .contains("read-only")
+        );
+        assert_eq!(store.lifecycle_updates.get(), 0);
+        assert_eq!(store.completion_updates.get(), 0);
+
+        store.reminders.borrow_mut()[0].allows_list_modifications = None;
+        assert!(
+            complete_reminder(&store, "R1", None, true)
+                .unwrap_err()
+                .to_string()
+                .contains("writability is unknown")
+        );
+        assert_eq!(store.completion_updates.get(), 0);
     }
 }

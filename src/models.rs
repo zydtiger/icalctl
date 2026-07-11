@@ -32,6 +32,13 @@ pub enum JsonOutput {
         would_write: bool,
         draft: Box<ReminderDraftReport>,
     },
+    ReminderMutationDryRun {
+        would_write: bool,
+        draft: Box<ReminderMutationDraftReport>,
+    },
+    ReminderDeleted {
+        deleted: ReminderDeletedReport,
+    },
     Events {
         events: Vec<EventReport>,
     },
@@ -226,6 +233,23 @@ pub struct ReminderDraftReport {
     pub if_exists: String,
     pub duplicate_window_seconds: i64,
     pub duplicate_warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ReminderMutationDraftReport {
+    pub operation: String,
+    pub reminder_id: String,
+    pub changed_fields: Vec<String>,
+    pub before: Box<ReminderReport>,
+    pub result: Box<ReminderReport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ReminderDeletedReport {
+    pub id: String,
+    pub title: String,
+    pub list: Option<String>,
+    pub list_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
