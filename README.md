@@ -153,11 +153,31 @@ icalctl reminders --help
 
 `icalctl show` loads event recurrence rules and their end conditions. It also
 reports `is_detached` and the original `occurrence_date` for recurrence
-exceptions. Recurring-event creation and occurrence/series mutation scope are
-not implemented yet; this recurrence surface is read-only.
+exceptions. Recurring-event creation is supported through `add`; explicit
+occurrence/series mutation scope is not implemented yet.
 A fresh cached row preserves the selected occurrence start. An EventKit series
 identifier alone may resolve to its first occurrence, so pair a durable series
 id with `--occurrence-start <RFC3339>` when inspecting a specific occurrence.
+
+Create a recurring event through the normal add pipeline:
+
+```sh
+icalctl add "Biweekly review" --calendar-id CALENDAR_ID \
+  --start 2026-07-20T09:00:00+03:00 \
+  --end 2026-07-20T09:30:00+03:00 \
+  --repeat weekly --repeat-interval 2 \
+  --repeat-weekday monday --repeat-count 8 \
+  --dry-run --json
+```
+
+`--repeat` accepts `daily`, `weekly`, `monthly`, or `yearly`. Repeatable
+`--repeat-weekday` adds weekday constraints; `--repeat-month-day` is valid only
+for monthly rules and accepts positive or negative month days;
+finish with either `--repeat-count` or offset-bearing `--repeat-until`. The
+normal calendar selection, validation, alarms, timezone, dry-run, and
+confirmation safeguards still apply.
+Until Phase 3 recurrence-aware duplicate semantics land, recurring creation
+requires the default `--if-exists error` policy.
 
 ## Date Input
 

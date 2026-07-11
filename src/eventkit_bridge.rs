@@ -4,10 +4,12 @@ use crate::models::{
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use eventkit::EventDraft;
+use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2_event_kit::{
-    EKAlarmProximity, EKAlarmType, EKCalendarItem, EKEvent, EKEventStore, EKRecurrenceFrequency,
-    EKRecurrenceRule, EKSpan,
+    EKAlarm, EKAlarmProximity, EKAlarmType, EKCalendarItem, EKEvent, EKEventStore,
+    EKRecurrenceDayOfWeek, EKRecurrenceEnd, EKRecurrenceFrequency, EKRecurrenceRule, EKSpan,
+    EKWeekday,
 };
 use objc2_foundation::{NSArray, NSDate, NSNumber, NSString, NSTimeZone, NSURL};
 
@@ -15,6 +17,8 @@ pub fn create_event_in_calendar(
     draft: &EventDraft<'_>,
     calendar_id: &str,
     time_zone: Option<&str>,
+    recurrence: Option<&EventRecurrenceReport>,
+    alarm_minutes_before: &[i64],
 ) -> Result<String> {
     let store = unsafe { EKEventStore::new() };
     let calendar_id = NSString::from_str(calendar_id);
@@ -55,6 +59,10 @@ pub fn create_event_in_calendar(
     if let Some(time_zone) = time_zone {
         set_time_zone(&event, time_zone)?;
     }
+    if let Some(recurrence) = recurrence {
+        set_event_recurrence(&event, recurrence)?;
+    }
+    set_relative_alarms(&event, alarm_minutes_before)?;
 
     unsafe {
         store
@@ -66,6 +74,93 @@ pub fn create_event_in_calendar(
     unsafe { event.eventIdentifier() }
         .map(|id| id.to_string())
         .ok_or_else(|| anyhow!("EventKit did not return an id for the created event"))
+}
+
+fn set_relative_alarms(event: &EKEvent, alarm_minutes_before: &[i64]) -> Result<()> {
+    for minutes in alarm_minutes_before {
+        let seconds = minutes
+            .checked_mul(60)
+            .context("alarm minutes overflowed seconds")?;
+        let alarm = unsafe { EKAlarm::alarmWithRelativeOffset(-(seconds as f64)) };
+        unsafe { event.addAlarm(&alarm) };
+    }
+    Ok(())
+}
+
+fn set_event_recurrence(event: &EKEvent, recurrence: &EventRecurrenceReport) -> Result<()> {
+    let frequency = match recurrence.frequency.as_str() {
+        "daily" => EKRecurrenceFrequency::Daily,
+        "weekly" => EKRecurrenceFrequency::Weekly,
+        "monthly" => EKRecurrenceFrequency::Monthly,
+        "yearly" => EKRecurrenceFrequency::Yearly,
+        value => bail!("unsupported recurrence frequency: {value}"),
+    };
+    let end = match recurrence.end.kind.as_str() {
+        "never" => None,
+        "count" => Some(unsafe {
+            EKRecurrenceEnd::recurrenceEndWithOccurrenceCount(
+                recurrence
+                    .end
+                    .occurrence_count
+                    .context("recurrence count is missing")?,
+            )
+        }),
+        "date" => {
+            let value = recurrence
+                .end
+                .end_date
+                .as_deref()
+                .context("recurrence end date is missing")?;
+            let value = DateTime::parse_from_rfc3339(value)
+                .context("recurrence end date must be RFC3339")?;
+            let date = NSDate::dateWithTimeIntervalSince1970(
+                value.timestamp() as f64
+                    + f64::from(value.timestamp_subsec_nanos()) / 1_000_000_000.0,
+            );
+            Some(unsafe { EKRecurrenceEnd::recurrenceEndWithEndDate(&date) })
+        }
+        value => bail!("unsupported recurrence end kind: {value}"),
+    };
+    let weekdays = recurrence.days_of_week.as_ref().map(|values| {
+        values
+            .iter()
+            .map(|value| unsafe {
+                EKRecurrenceDayOfWeek::dayOfWeek_weekNumber(
+                    EKWeekday(value.weekday),
+                    value.week_number,
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+    let month_days = recurrence.days_of_month.as_ref().map(|values| {
+        values
+            .iter()
+            .map(|value| NSNumber::new_i32(*value))
+            .collect::<Vec<_>>()
+    });
+    let weekday_array = weekdays
+        .as_ref()
+        .map(|values| NSArray::from_retained_slice(values));
+    let month_day_array = month_days
+        .as_ref()
+        .map(|values| NSArray::from_retained_slice(values));
+    let rule = unsafe {
+        EKRecurrenceRule::initRecurrenceWithFrequency_interval_daysOfTheWeek_daysOfTheMonth_monthsOfTheYear_weeksOfTheYear_daysOfTheYear_setPositions_end(
+            EKRecurrenceRule::alloc(),
+            frequency,
+            recurrence.interval as isize,
+            weekday_array.as_deref(),
+            month_day_array.as_deref(),
+            None,
+            None,
+            None,
+            None,
+            end.as_deref(),
+        )
+    };
+    let rules = NSArray::from_retained_slice(&[rule]);
+    unsafe { event.setRecurrenceRules(Some(&rules)) };
+    Ok(())
 }
 
 pub fn update_event_calendar_metadata(
@@ -435,5 +530,53 @@ mod tests {
             .with_timezone(&Local);
         assert!(occurrence_second_matches(-0.25, epoch));
         assert!(!occurrence_second_matches(-1.25, epoch));
+    }
+
+    #[test]
+    fn recurring_creation_builds_an_eventkit_rule_without_saving() {
+        let store = unsafe { EKEventStore::new() };
+        let event = unsafe { EKEvent::eventWithEventStore(&store) };
+        let recurrence = EventRecurrenceReport {
+            frequency: "monthly".to_string(),
+            interval: 1,
+            first_day_of_week: 2,
+            end: EventRecurrenceEndReport {
+                kind: "count".to_string(),
+                occurrence_count: Some(4),
+                end_date: None,
+            },
+            days_of_week: None,
+            days_of_month: Some(vec![1, -1]),
+            months_of_year: None,
+            weeks_of_year: None,
+            days_of_year: None,
+            set_positions: None,
+        };
+
+        set_event_recurrence(&event, &recurrence).unwrap();
+        let rules = unsafe { event.recurrenceRules() }.unwrap();
+        let round_trip = event_recurrence_report(&rules.objectAtIndex(0));
+
+        assert_eq!(round_trip.frequency, "monthly");
+        assert_eq!(round_trip.interval, 1);
+        assert_eq!(round_trip.end.occurrence_count, Some(4));
+        assert_eq!(round_trip.days_of_month, Some(vec![1, -1]));
+    }
+
+    #[test]
+    fn creation_attaches_all_alarms_before_any_save() {
+        let store = unsafe { EKEventStore::new() };
+        let event = unsafe { EKEvent::eventWithEventStore(&store) };
+
+        set_relative_alarms(&event, &[30, 10]).unwrap();
+
+        let alarms = unsafe { event.alarms() }.unwrap();
+        assert_eq!(alarms.len(), 2);
+        let mut offsets = alarms
+            .iter()
+            .map(|alarm| unsafe { alarm.relativeOffset() } as i64)
+            .collect::<Vec<_>>();
+        offsets.sort_unstable();
+        assert_eq!(offsets, [-1800, -600]);
     }
 }

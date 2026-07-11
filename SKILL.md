@@ -460,8 +460,9 @@ Event `show` loads public recurrence rules in addition to alarms. Inspect
 weekday entries preserve both EventKit's weekday number and ordinal
 `week_number`; do not collapse an ordinal rule such as first Monday into every
 Monday. Event
-recurrence writes and occurrence/series scope are not supported yet; do not
-infer or simulate them with ordinary add/update/delete commands.
+recurrence creation is supported only through the normal `add` pipeline.
+Occurrence/series update and delete scope are not supported yet; do not infer
+or simulate them with ordinary update/delete commands.
 
 ### `today`
 
@@ -565,12 +566,17 @@ Options:
 - `--availability <AVAILABILITY>`: one of `busy`, `free`, `tentative`, or `unavailable`.
 - `--time-zone <TZID>`: interpret timezone-less inputs in an IANA zone and store that zone on the event.
 - `--alarm-minutes-before <MINUTES>`: add a display alarm before the event. Can be passed more than once.
+- `--repeat <FREQUENCY>`: create a daily, weekly, monthly, or yearly series.
+- `--repeat-interval <N>`: positive interval, defaulting to 1.
+- `--repeat-weekday <DAY>`: repeatable weekday constraint.
+- `--repeat-month-day <N>`: repeatable positive or negative constraint for monthly rules only.
+- `--repeat-count <N>` or `--repeat-until <RFC3339>`: optional exclusive termination choice.
 - `--if-exists <POLICY>`: `error` (default), `skip`, or `update` for a matching calendar/title/start/end/all-day identity.
 - `--duplicate-window-seconds <N>`: optional start/end tolerance; defaults to exact matching (`0`).
 - `--dry-run`: validate and print the resolved event draft without writing.
 - `--json`: print the created event as JSON.
 
-The event JSON has `calendar_selection: "explicit"` when a calendar selector was passed and `calendar_selection: "eventkit_default"` when EventKit's default was used. It reports `write_action` as `created`, `skipped`, or `updated`. Prefer `--if-exists skip` for retry-safe agent writes; preview it first because a duplicate-window tolerance can match a nearby event.
+The event JSON has `calendar_selection: "explicit"` when a calendar selector was passed and `calendar_selection: "eventkit_default"` when EventKit's default was used. It reports `write_action` as `created`, `skipped`, or `updated`. Prefer `--if-exists skip` for retry-safe non-recurring writes; preview it first because a duplicate-window tolerance can match a nearby event. Recurring creation currently requires `--if-exists error` until recurrence-aware duplicate semantics are implemented.
 
 JSON draft files require `title`, `start`, and `end` and support `calendar`,
 `calendar_id`, `calendar_source`, `source_id`, `notes`, `location`, `url`,
@@ -580,6 +586,9 @@ the command. Always dry-run a JSON draft and inspect its resolved calendar and
 times before confirmation.
 
 Never run `add` until the calendar choice and final event details have been confirmed by the user.
+For recurrence, the confirmation must include the normalized frequency,
+interval, weekday/month-day constraints, and count/end date. Dry-run the full
+series definition before creating it.
 
 ### `batch add`
 

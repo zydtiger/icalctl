@@ -176,6 +176,33 @@ pub struct ReminderAdvancedScheduleArgs {
     pub repeat_until: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Args)]
+pub struct EventRecurrenceArgs {
+    /// Recurrence frequency for a newly created event.
+    #[arg(long = "repeat", value_enum)]
+    pub repeat: Option<EventRepeatArg>,
+
+    /// Positive recurrence interval; defaults to 1.
+    #[arg(long = "repeat-interval", requires = "repeat")]
+    pub interval: Option<usize>,
+
+    /// Weekday included by a weekly, monthly, or yearly rule. Repeatable.
+    #[arg(long = "repeat-weekday", value_enum, requires = "repeat")]
+    pub weekdays: Vec<EventWeekdayArg>,
+
+    /// Month day from 1 through 31, or -1 through -31 from the end. Repeatable.
+    #[arg(long = "repeat-month-day", requires = "repeat")]
+    pub month_days: Vec<i32>,
+
+    /// Stop after this positive number of occurrences.
+    #[arg(long = "repeat-count", requires = "repeat", conflicts_with = "until")]
+    pub count: Option<usize>,
+
+    /// Stop at this RFC3339 instant with an explicit UTC offset.
+    #[arg(long = "repeat-until", value_name = "RFC3339", requires = "repeat")]
+    pub until: Option<String>,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Print EventKit Calendar authorization status.
@@ -307,6 +334,9 @@ pub enum Command {
         /// Add a display alarm N minutes before the event. Can be passed more than once.
         #[arg(long = "alarm-minutes-before", value_name = "MINUTES")]
         alarm_minutes_before: Vec<i64>,
+
+        #[command(flatten)]
+        recurrence: EventRecurrenceArgs,
 
         /// Behavior when a matching event already exists.
         #[arg(long = "if-exists", value_enum, default_value_t = IfExistsArg::Error)]
@@ -815,6 +845,25 @@ pub enum ReminderPriorityArg {
     Low,
     Medium,
     High,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum EventRepeatArg {
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum EventWeekdayArg {
+    Sunday,
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
@@ -1751,6 +1800,45 @@ mod tests {
                 id,
                 occurrence_start: Some(start),
             } if id == "SERIES-ID" && start == "2026-07-20T09:00:00+03:00"
+        ));
+    }
+
+    #[test]
+    fn event_add_parses_recurrence_creation_flags() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "add",
+            "Standup",
+            "--start",
+            "2026-07-20T09:00:00+03:00",
+            "--end",
+            "2026-07-20T09:30:00+03:00",
+            "--repeat",
+            "weekly",
+            "--repeat-interval",
+            "2",
+            "--repeat-weekday",
+            "monday",
+            "--repeat-weekday",
+            "wednesday",
+            "--repeat-count",
+            "8",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Add {
+                recurrence: EventRecurrenceArgs {
+                    repeat: Some(EventRepeatArg::Weekly),
+                    interval: Some(2),
+                    weekdays,
+                    count: Some(8),
+                    ..
+                },
+                dry_run: true,
+                ..
+            } if weekdays == [EventWeekdayArg::Monday, EventWeekdayArg::Wednesday]
         ));
     }
 }

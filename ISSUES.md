@@ -321,23 +321,24 @@ Acceptance checks:
 
 ## 14. Add recurring calendar-event support later
 
-**Status: In progress.** Phase 1 read-only recurrence and exception reporting is
-complete. Recurring-event creation and every occurrence/series mutation remain
-unimplemented.
+**Status: In progress.** Phases 1 and 2 are complete: recurrence is readable and
+new series can be created. Structured/batch duplicate semantics and every
+occurrence/series mutation remain unimplemented.
 
 Implementation phases:
 
 - [x] Phase 1: read-only recurrence rules, termination conditions, and detached
   occurrence/original-date reporting in event details.
-- [ ] Phase 2: recurring creation for daily, weekly, monthly, and yearly rules.
-- [ ] Phase 3: recurrence-aware dry runs and duplicate handling.
+- [x] Phase 2: recurring creation for daily, weekly, monthly, and yearly rules.
+- [ ] Phase 3: recurrence-aware structured JSON, batch, and duplicate handling.
 - [ ] Phase 4: explicit one-occurrence and future-occurrence update/delete scope.
 - [ ] Phase 5: DST/all-day correctness, batch compatibility, guarded EventKit
   integration coverage, documentation hardening, and final resolution.
 
-Problem: `icalctl` does not yet expose recurrence rules for calendar events or
-let users safely create and edit recurring series. EventKit recurrence also
-requires explicit occurrence-versus-series behavior for updates and deletes.
+Remaining problem: recurrence is readable and new series can be created, but
+structured JSON, batch, and duplicate policies do not yet understand recurrence.
+Updates and deletes also require explicit occurrence-versus-future scope before
+recurring-series mutation can be safe.
 
 Proposed changes:
 

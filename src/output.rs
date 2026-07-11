@@ -527,6 +527,9 @@ fn print_dry_run(draft: &EventDraftReport) {
     }
     println!("availability: {}", draft.availability);
     println!("alarms: {}", draft.alarm_count);
+    if let Some(recurrence) = &draft.recurrence {
+        println!("recurrence: {}", event_recurrence_label(recurrence));
+    }
     println!(
         "fields: notes={} location={} url={}",
         draft.has_notes, draft.has_location, draft.has_url

@@ -1,7 +1,7 @@
 use crate::calendar::{
-    add_relative_alarms, authorized_events_manager, availability_name,
-    ensure_availability_supported, ensure_valid_event_range, replace_relative_alarms,
-    resolve_target_calendar, validate_alarm_minutes,
+    authorized_events_manager, availability_name, ensure_availability_supported,
+    ensure_valid_event_range, replace_relative_alarms, resolve_target_calendar,
+    validate_alarm_minutes,
 };
 use crate::cli::{AvailabilityArg, IfExistsArg, WriteCalendarSelectorArgs};
 use crate::dates::{
@@ -603,7 +603,7 @@ fn execute_prepared(
                 .clone();
             ("skipped", Some(id), None)
         }
-        PlannedAction::Create => match create_prepared(events, prepared) {
+        PlannedAction::Create => match create_prepared(prepared) {
             Ok(id) => ("created", Some(id), None),
             Err((id, error)) => ("failed", id, Some(format!("{error:#}"))),
         },
@@ -623,7 +623,6 @@ fn execute_prepared(
 }
 
 fn create_prepared(
-    events: &EventsManager,
     prepared: &PreparedEvent,
 ) -> std::result::Result<String, (Option<String>, anyhow::Error)> {
     let draft = EventDraft {
@@ -639,14 +638,15 @@ fn create_prepared(
         ..Default::default()
     };
     let time_zone = patch_value(&prepared.time_zone);
-    let id = create_event_in_calendar(&draft, &prepared.calendar.identifier, time_zone)
-        .context("failed to create event through EventKit")
-        .map_err(|error| (None, error))?;
-    if let Err(error) =
-        add_relative_alarms(events, &id, prepared.alarms.as_deref().unwrap_or_default())
-    {
-        return Err((Some(id), error));
-    }
+    let id = create_event_in_calendar(
+        &draft,
+        &prepared.calendar.identifier,
+        time_zone,
+        None,
+        prepared.alarms.as_deref().unwrap_or_default(),
+    )
+    .context("failed to create event through EventKit")
+    .map_err(|error| (None, error))?;
     Ok(id)
 }
 
@@ -790,6 +790,7 @@ fn draft_report(events: &EventsManager, prepared: &PreparedEvent) -> Result<Even
             .unwrap_or("default")
             .to_string(),
         alarm_count,
+        recurrence: None,
         has_notes: patched_presence(
             current.and_then(|event| event.notes.as_deref()),
             &prepared.notes,
