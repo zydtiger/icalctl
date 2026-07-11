@@ -591,7 +591,10 @@ times before confirmation.
 Never run `add` until the calendar choice and final event details have been confirmed by the user.
 For recurrence, the confirmation must include the normalized frequency,
 interval, weekday/month-day constraints, and count/end date. Dry-run the full
-series definition before creating it.
+series definition before creating it. For a timed series that should keep the
+same wall-clock time across daylight-saving changes, require its IANA
+`--time-zone`; an offset alone does not identify future timezone transitions.
+Recurring all-day events must use date-only `--start` and `--end` values.
 
 ### `batch add`
 
@@ -605,7 +608,8 @@ icalctl batch add --file events.json --if-exists skip --json
 The file contains `version: 1`, optional `defaults`, and an `events` array.
 Every event requires `title`, `start`, and `end`; prefer exact `calendar_id`
 values in defaults or individual entries. Datetime and timezone behavior is the
-same as `add`.
+same as `add`. If a row inherits or sets both recurrence and `all_day: true`,
+its `start` and `end` must be date-only.
 
 Always inspect the complete dry-run result and obtain confirmation for every
 planned create or update before running the live command. `--if-exists error`

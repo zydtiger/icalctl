@@ -2,6 +2,7 @@ use crate::calendar::{
     authorized_events_manager, availability_name, ensure_availability_supported,
     ensure_valid_event_range, parse_event_recurrence, recurrence_rules_match,
     replace_relative_alarms, resolve_target_calendar, validate_alarm_minutes,
+    validate_recurring_all_day_inputs,
 };
 use crate::cli::{
     AvailabilityArg, EventJsonRecurrence, EventRecurrenceArgs, IfExistsArg,
@@ -341,6 +342,7 @@ fn prepare_event(
         }
         PatchValue::Missing | PatchValue::Null => None,
     };
+    validate_recurring_all_day_inputs(all_day, recurrence.is_some(), &event.start, &event.end)?;
 
     let matches = matching_events(
         events,
@@ -1004,6 +1006,61 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(cleared_recurrence.recurrence, PatchValue::Null));
+    }
+
+    #[test]
+    fn recurring_all_day_validation_uses_effective_batch_defaults_and_overrides() {
+        let defaults: BatchDefaults = serde_json::from_value(json!({
+            "all_day": true,
+            "recurrence": { "frequency": "daily" }
+        }))
+        .unwrap();
+        let event = |extra: Value| {
+            let mut value = json!({
+                "title": "DST dates",
+                "start": "2030-03-30T00:00:00+01:00",
+                "end": "2030-03-31T00:00:00+01:00"
+            });
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<BatchEvent>(value).unwrap()
+        };
+        let validate = |event: &BatchEvent| {
+            let all_day = event.all_day.or(defaults.all_day).unwrap_or(false);
+            let recurring = matches!(
+                merged_recurrence(&defaults, &event.recurrence),
+                PatchValue::Value(_)
+            );
+            validate_recurring_all_day_inputs(all_day, recurring, &event.start, &event.end)
+        };
+
+        assert!(validate(&event(json!({}))).is_err());
+        assert!(validate(&event(json!({ "recurrence": null }))).is_ok());
+        assert!(validate(&event(json!({ "all_day": false }))).is_ok());
+
+        let date_only: BatchEvent = serde_json::from_value(json!({
+            "title": "DST dates",
+            "start": "2030-03-30",
+            "end": "2030-03-30"
+        }))
+        .unwrap();
+        assert!(validate(&date_only).is_ok());
+
+        let ordinary_defaults = BatchDefaults {
+            all_day: Some(true),
+            ..Default::default()
+        };
+        assert!(
+            validate_recurring_all_day_inputs(
+                ordinary_defaults.all_day.unwrap(),
+                ordinary_defaults.recurrence.is_some(),
+                "2030-03-30T00:00:00+01:00",
+                "2030-03-31T00:00:00+01:00"
+            )
+            .is_ok()
+        );
     }
 
     #[test]

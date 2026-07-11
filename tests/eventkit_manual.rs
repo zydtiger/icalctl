@@ -1,5 +1,7 @@
 use chrono::DateTime;
 use serde_json::Value;
+use std::cell::RefCell;
+use std::io;
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -8,10 +10,11 @@ const TEST_CALENDAR_TITLE: &str = "icalctl Test";
 const TEST_REMINDER_LIST_TITLE: &str = "icalctl Test";
 
 fn run(args: &[&str]) -> Output {
-    Command::new(ICALCTL)
-        .args(args)
-        .output()
-        .expect("failed to run icalctl test binary")
+    try_run(args).expect("failed to run icalctl test binary")
+}
+
+fn try_run(args: &[&str]) -> io::Result<Output> {
+    Command::new(ICALCTL).args(args).output()
 }
 
 fn json(output: &Output) -> Value {
@@ -26,6 +29,128 @@ fn json(output: &Output) -> Value {
 
 struct EventCleanup {
     id: Option<String>,
+}
+
+struct RecurringEventCleanup {
+    title: String,
+    calendar_id: String,
+    from: &'static str,
+    to: &'static str,
+    fallback: RefCell<Option<(String, String)>>,
+}
+
+impl RecurringEventCleanup {
+    fn try_occurrences(&self) -> Result<Vec<Value>, String> {
+        let output = try_run(&[
+            "search",
+            &self.title,
+            "--from",
+            self.from,
+            "--to",
+            self.to,
+            "--calendar-id",
+            &self.calendar_id,
+            "--json",
+        ])
+        .map_err(|error| format!("failed to run recurring event search: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "recurring event search failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let value: Value = serde_json::from_slice(&output.stdout)
+            .map_err(|error| format!("invalid recurring search JSON: {error}"))?;
+        value["events"]
+            .as_array()
+            .cloned()
+            .ok_or_else(|| "recurring search JSON has no events array".to_string())
+    }
+
+    fn occurrences(&self) -> Vec<Value> {
+        self.try_occurrences().unwrap()
+    }
+
+    fn try_delete_all(&self) -> Result<(), String> {
+        let mut deleted_any = false;
+        for _ in 0..16 {
+            let occurrences = match self.try_occurrences() {
+                Ok(occurrences) => occurrences,
+                Err(error) => {
+                    return self.try_delete_fallback().map_err(|fallback| {
+                        format!("{error}; fallback cleanup failed: {fallback}")
+                    });
+                }
+            };
+            let Some(event) = occurrences.into_iter().next() else {
+                if deleted_any {
+                    self.fallback.borrow_mut().take();
+                    return Ok(());
+                }
+                return self.try_delete_fallback();
+            };
+            let id = event["id"]
+                .as_str()
+                .ok_or_else(|| "cleanup event has no id".to_string())?;
+            let start = event["start"]
+                .as_str()
+                .ok_or_else(|| "cleanup event has no start".to_string())?;
+            let deleted = try_run(&[
+                "delete",
+                id,
+                "--occurrence-start",
+                start,
+                "--scope",
+                "occurrence",
+                "--force",
+                "--json",
+            ])
+            .map_err(|error| format!("failed to run recurring cleanup delete: {error}"))?;
+            if !deleted.status.success() {
+                return Err(format!(
+                    "recurring cleanup delete failed: {}",
+                    String::from_utf8_lossy(&deleted.stderr)
+                ));
+            }
+            deleted_any = true;
+        }
+        Err("recurring cleanup exceeded its occurrence limit".to_string())
+    }
+
+    fn try_delete_fallback(&self) -> Result<(), String> {
+        let Some((fallback_id, fallback_start)) = self.fallback.borrow().clone() else {
+            return Ok(());
+        };
+        let deleted = try_run(&[
+            "delete",
+            &fallback_id,
+            "--occurrence-start",
+            &fallback_start,
+            "--scope",
+            "future",
+            "--force",
+            "--json",
+        ])
+        .map_err(|error| format!("failed to run fallback recurring delete: {error}"))?;
+        if !deleted.status.success() {
+            return Err(format!(
+                "fallback recurring delete failed: {}",
+                String::from_utf8_lossy(&deleted.stderr)
+            ));
+        }
+        self.fallback.borrow_mut().take();
+        Ok(())
+    }
+
+    fn delete_all(&self) {
+        self.try_delete_all().unwrap();
+    }
+}
+
+impl Drop for RecurringEventCleanup {
+    fn drop(&mut self) {
+        let _ = self.try_delete_all();
+    }
 }
 
 impl EventCleanup {
@@ -158,6 +283,225 @@ fn create_read_back_and_delete_on_explicit_test_calendar() {
         "cleanup delete failed: {}",
         String::from_utf8_lossy(&deleted.stderr)
     );
+}
+
+#[test]
+#[ignore = "manual destructive recurrence test; requires explicit opt-in and an exact `icalctl Test` calendar"]
+fn recurring_dst_all_day_and_scoped_mutations_on_explicit_test_calendar() {
+    assert_eq!(
+        std::env::var("ICALCTL_RUN_EVENTKIT_TESTS").as_deref(),
+        Ok("1"),
+        "set ICALCTL_RUN_EVENTKIT_TESTS=1 to acknowledge real Calendar writes"
+    );
+    let calendar_id = std::env::var("ICALCTL_TEST_CALENDAR_ID")
+        .expect("set ICALCTL_TEST_CALENDAR_ID to the exact id of an `icalctl Test` calendar");
+    let calendars = json(&run(&["calendars", "--json"]));
+    let calendar = calendars["calendars"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|calendar| calendar["id"] == calendar_id)
+        .expect("ICALCTL_TEST_CALENDAR_ID was not found");
+    assert_eq!(calendar["title"], TEST_CALENDAR_TITLE);
+    assert_eq!(calendar["allows_modifications"], true);
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let timed_title = format!("icalctl recurring DST integration {nonce}");
+    let created = run(&[
+        "add",
+        &timed_title,
+        "--calendar-id",
+        &calendar_id,
+        "--start",
+        "2030-03-24T09:00",
+        "--end",
+        "2030-03-24T10:00",
+        "--time-zone",
+        "Europe/Berlin",
+        "--repeat",
+        "weekly",
+        "--repeat-count",
+        "4",
+        "--if-exists",
+        "error",
+        "--json",
+    ]);
+    assert!(
+        created.status.success(),
+        "recurring add failed: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let timed_cleanup = RecurringEventCleanup {
+        title: timed_title,
+        calendar_id: calendar_id.clone(),
+        from: "2030-03-20",
+        to: "2030-04-20",
+        fallback: RefCell::new(None),
+    };
+    let created = json(&created);
+    *timed_cleanup.fallback.borrow_mut() = Some((
+        created["event"]["id"].as_str().unwrap().to_string(),
+        created["event"]["start"].as_str().unwrap().to_string(),
+    ));
+    let occurrences = timed_cleanup.occurrences();
+    assert_eq!(occurrences.len(), 4);
+    assert!(
+        occurrences[0]["start_in_event_time_zone"]
+            .as_str()
+            .unwrap()
+            .starts_with("2030-03-24T09:00:00+01:00")
+    );
+    assert!(
+        occurrences[1]["start_in_event_time_zone"]
+            .as_str()
+            .unwrap()
+            .starts_with("2030-03-31T09:00:00+02:00")
+    );
+
+    let second_id = occurrences[1]["id"].as_str().unwrap();
+    let second_start = occurrences[1]["start"].as_str().unwrap();
+    let occurrence_update = run(&[
+        "update",
+        second_id,
+        "--occurrence-start",
+        second_start,
+        "--scope",
+        "occurrence",
+        "--notes",
+        "only this occurrence",
+        "--json",
+    ]);
+    assert!(occurrence_update.status.success());
+    let occurrence_update = json(&occurrence_update);
+    assert_eq!(occurrence_update["event"]["write_scope"], "occurrence");
+    assert_eq!(occurrence_update["event"]["is_detached"], true);
+
+    let occurrences = timed_cleanup.occurrences();
+    assert_eq!(occurrences[1]["id"], occurrence_update["event"]["id"]);
+    assert_eq!(occurrences[1]["start"], occurrence_update["event"]["start"]);
+    assert_eq!(occurrences[0]["notes"], Value::Null);
+    assert_eq!(occurrences[1]["notes"], "only this occurrence");
+    assert_eq!(occurrences[2]["notes"], Value::Null);
+    let third_id = occurrences[2]["id"].as_str().unwrap();
+    let third_start = occurrences[2]["start"].as_str().unwrap();
+    let future_update = run(&[
+        "update",
+        third_id,
+        "--occurrence-start",
+        third_start,
+        "--scope",
+        "future",
+        "--location",
+        "future only",
+        "--json",
+    ]);
+    assert!(future_update.status.success());
+    let future_update = json(&future_update);
+    assert_eq!(future_update["event"]["write_scope"], "future");
+
+    let occurrences = timed_cleanup.occurrences();
+    assert_eq!(occurrences[2]["id"], future_update["event"]["id"]);
+    assert_eq!(occurrences[2]["start"], future_update["event"]["start"]);
+    assert_eq!(occurrences[0]["location"], Value::Null);
+    assert_eq!(occurrences[1]["location"], Value::Null);
+    assert_eq!(occurrences[2]["location"], "future only");
+    assert_eq!(occurrences[3]["location"], "future only");
+
+    let detached_delete = run(&[
+        "delete",
+        occurrences[1]["id"].as_str().unwrap(),
+        "--occurrence-start",
+        occurrences[1]["start"].as_str().unwrap(),
+        "--scope",
+        "occurrence",
+        "--force",
+        "--json",
+    ]);
+    assert!(detached_delete.status.success());
+    let occurrences = timed_cleanup.occurrences();
+    assert_eq!(occurrences.len(), 3);
+    let future_delete = run(&[
+        "delete",
+        occurrences[1]["id"].as_str().unwrap(),
+        "--occurrence-start",
+        occurrences[1]["start"].as_str().unwrap(),
+        "--scope",
+        "future",
+        "--force",
+        "--json",
+    ]);
+    assert!(future_delete.status.success());
+    assert_eq!(timed_cleanup.occurrences().len(), 1);
+    timed_cleanup.delete_all();
+
+    let all_day_title = format!("icalctl recurring all-day integration {nonce}");
+    let all_day_created = run(&[
+        "add",
+        &all_day_title,
+        "--calendar-id",
+        &calendar_id,
+        "--start",
+        "2030-03-30",
+        "--end",
+        "2030-03-30",
+        "--all-day",
+        "--time-zone",
+        "Europe/Berlin",
+        "--repeat",
+        "daily",
+        "--repeat-count",
+        "3",
+        "--if-exists",
+        "error",
+        "--json",
+    ]);
+    assert!(
+        all_day_created.status.success(),
+        "all-day recurring add failed: {}",
+        String::from_utf8_lossy(&all_day_created.stderr)
+    );
+    let all_day_cleanup = RecurringEventCleanup {
+        title: all_day_title,
+        calendar_id,
+        from: "2030-03-29",
+        to: "2030-04-03",
+        fallback: RefCell::new(None),
+    };
+    let all_day_created = json(&all_day_created);
+    *all_day_cleanup.fallback.borrow_mut() = Some((
+        all_day_created["event"]["id"].as_str().unwrap().to_string(),
+        all_day_created["event"]["start"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    ));
+    let all_day = all_day_cleanup.occurrences();
+    assert_eq!(all_day.len(), 3);
+    for event in &all_day {
+        assert_eq!(event["all_day"], true);
+    }
+    assert!(
+        all_day[0]["start_in_event_time_zone"]
+            .as_str()
+            .unwrap()
+            .starts_with("2030-03-30T00:00:00+01:00")
+    );
+    assert!(
+        all_day[1]["start_in_event_time_zone"]
+            .as_str()
+            .unwrap()
+            .starts_with("2030-03-31T00:00:00+01:00")
+    );
+    assert!(
+        all_day[2]["start_in_event_time_zone"]
+            .as_str()
+            .unwrap()
+            .starts_with("2030-04-01T00:00:00+02:00")
+    );
+    all_day_cleanup.delete_all();
 }
 
 #[test]

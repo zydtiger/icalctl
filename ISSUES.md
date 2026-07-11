@@ -321,10 +321,10 @@ Acceptance checks:
 
 ## 14. Add recurring calendar-event support later
 
-**Status: In progress.** Phases 1 through 4 are complete: recurrence is readable,
-new series can be created, structured/batch duplicate workflows understand
-normalized rules, and recurring update/delete require exact occurrence and
-explicit occurrence-versus-future scope. DST/all-day hardening remains.
+**Status: Resolved.** Recurrence is readable and creatable through the existing
+event pipeline; structured/batch duplicate workflows compare normalized rules;
+scoped mutations require an exact occurrence; and DST/all-day behavior has
+deterministic plus guarded EventKit coverage.
 
 Implementation phases:
 
@@ -333,11 +333,8 @@ Implementation phases:
 - [x] Phase 2: recurring creation for daily, weekly, monthly, and yearly rules.
 - [x] Phase 3: recurrence-aware structured JSON, batch, and duplicate handling.
 - [x] Phase 4: explicit one-occurrence and future-occurrence update/delete scope.
-- [ ] Phase 5: DST/all-day correctness, batch compatibility, guarded EventKit
+- [x] Phase 5: DST/all-day correctness, batch compatibility, guarded EventKit
   integration coverage, documentation hardening, and final resolution.
-
-Remaining work is DST/all-day, batch integration, and guarded EventKit
-hardening.
 
 Proposed changes:
 

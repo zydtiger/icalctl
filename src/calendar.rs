@@ -23,7 +23,7 @@ use crate::models::{
 };
 use crate::output::event_time_range;
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use eventkit::{
     AlarmInfo, AlarmProximity, AuthorizationStatus, CalendarInfo, EventAvailability, EventDraft,
     EventItem, EventKitError, EventPatch, EventSpan, EventsManager,
@@ -647,6 +647,22 @@ fn validate_json_selector(draft: &JsonAddDraft) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_recurring_all_day_inputs(
+    all_day: bool,
+    recurring: bool,
+    start: &str,
+    end: &str,
+) -> Result<()> {
+    if all_day
+        && recurring
+        && (NaiveDate::parse_from_str(start, "%Y-%m-%d").is_err()
+            || NaiveDate::parse_from_str(end, "%Y-%m-%d").is_err())
+    {
+        bail!("recurring all-day events require date-only --start and --end values");
+    }
+    Ok(())
+}
+
 fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
     if input.duplicate_window_seconds < 0 {
         bail!("--duplicate-window-seconds must be zero or greater");
@@ -655,6 +671,12 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
         validate_time_zone(time_zone)?;
         validate_event_time_zone(time_zone)?;
     }
+    validate_recurring_all_day_inputs(
+        input.all_day,
+        input.recurrence.is_some(),
+        &input.start,
+        &input.end,
+    )?;
     let start = parse_start_datetime_in_time_zone(&input.start, input.time_zone.as_deref())
         .with_context(|| format!("invalid --start: {}", input.start))?;
     let end = parse_end_datetime_in_time_zone(&input.end, input.time_zone.as_deref())
@@ -2054,6 +2076,29 @@ mod tests {
         );
         assert!(
             resolve_event_mutation_scope(false, true, Some(EventScopeArg::Occurrence)).is_err()
+        );
+    }
+
+    #[test]
+    fn recurring_all_day_events_require_date_only_boundaries() {
+        assert!(validate_recurring_all_day_inputs(true, true, "2030-03-30", "2030-03-30").is_ok());
+        assert!(
+            validate_recurring_all_day_inputs(
+                true,
+                true,
+                "2030-03-30T00:00:00+01:00",
+                "2030-03-31T00:00:00+01:00"
+            )
+            .is_err()
+        );
+        assert!(
+            validate_recurring_all_day_inputs(
+                false,
+                true,
+                "2030-03-30T09:00:00+01:00",
+                "2030-03-30T10:00:00+01:00"
+            )
+            .is_ok()
         );
     }
 

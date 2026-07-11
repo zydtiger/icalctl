@@ -179,6 +179,11 @@ for monthly rules and accepts positive or negative month days;
 finish with either `--repeat-count` or offset-bearing `--repeat-until`. The
 normal calendar selection, validation, alarms, timezone, dry-run, and
 confirmation safeguards still apply.
+For a timed series that must retain a local wall-clock time across daylight
+saving changes, pass its IANA `--time-zone`; EventKit stores that zone on the
+series while explicit input offsets remain authoritative for parsing. Recurring
+all-day events require date-only `--start` and `--end` values so every
+occurrence remains a calendar date across offset transitions.
 `--if-exists skip` is retry-safe only when the existing event has the exact
 same normalized recurrence rule. A same-time event with a different or absent
 rule is an explicit collision. Recurring `--if-exists update` remains blocked
@@ -426,6 +431,9 @@ calendar selector, timezone, availability, all-day state, and alarms. Calendar
 selectors use the same `calendar`, `calendar_id`, `calendar_source`, and
 `source_id` fields as the CLI. `client_id` is returned for correlation but is
 not stored in EventKit.
+Recurring rows whose effective `all_day` value is true require date-only
+`start` and `end`, including when recurrence or all-day state comes from
+`defaults`.
 
 Existing events are matched exactly by resolved calendar id, title, normalized
 start and end instants, and all-day state. `--if-exists` defaults to `error`;
@@ -1108,9 +1116,9 @@ cargo test --test eventkit_manual permission_and_default_calendar_are_parseable 
   -- --ignored --nocapture
 ```
 
-The round-trip test performs a real create, read-back, and delete. Before using
-it, create a writable calendar named exactly `icalctl Test`, inspect its exact
-id, and explicitly opt in:
+The round-trip tests perform real creates, read-backs, updates, and deletes.
+Before using them, create a writable calendar named exactly `icalctl Test`,
+inspect its exact id, and explicitly opt in:
 
 ```sh
 ICALCTL_RUN_EVENTKIT_TESTS=1 \
@@ -1120,8 +1128,20 @@ cargo test --test eventkit_manual \
   -- --ignored --nocapture
 ```
 
-The test refuses any other calendar title and installs a cleanup guard, but it
-still mutates real Calendar data and should only run against the dedicated test
+The recurrence hardening scenario additionally verifies a Berlin DST boundary,
+all-day date preservation, a detached occurrence, a future series split, and
+both delete scopes:
+
+```sh
+ICALCTL_RUN_EVENTKIT_TESTS=1 \
+ICALCTL_TEST_CALENDAR_ID=EXACT_TEST_CALENDAR_ID \
+cargo test --test eventkit_manual \
+  recurring_dst_all_day_and_scoped_mutations_on_explicit_test_calendar \
+  -- --ignored --nocapture
+```
+
+The tests refuse any other calendar title and install cleanup guards, but they
+still mutate real Calendar data and should only run against the dedicated test
 calendar.
 
 ## Architecture

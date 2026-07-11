@@ -206,6 +206,40 @@ mod tests {
     }
 
     #[test]
+    fn named_zone_preserves_wall_clock_across_spring_dst() {
+        let before =
+            parse_start_datetime_in_time_zone("2030-03-24T09:00", Some("Europe/Berlin")).unwrap();
+        let after =
+            parse_start_datetime_in_time_zone("2030-03-31T09:00", Some("Europe/Berlin")).unwrap();
+
+        assert_eq!(
+            datetime_in_time_zone(before, "Europe/Berlin").unwrap(),
+            "2030-03-24T09:00:00+01:00"
+        );
+        assert_eq!(
+            datetime_in_time_zone(after, "Europe/Berlin").unwrap(),
+            "2030-03-31T09:00:00+02:00"
+        );
+        assert_eq!((after - before).num_hours(), 167);
+    }
+
+    #[test]
+    fn all_day_boundaries_remain_dates_across_spring_dst() {
+        let start = parse_start_datetime_in_time_zone("2030-03-31", Some("Europe/Berlin")).unwrap();
+        let end = parse_end_datetime_in_time_zone("2030-03-31", Some("Europe/Berlin")).unwrap();
+
+        assert_eq!(
+            datetime_in_time_zone(start, "Europe/Berlin").unwrap(),
+            "2030-03-31T00:00:00+01:00"
+        );
+        assert_eq!(
+            datetime_in_time_zone(end, "Europe/Berlin").unwrap(),
+            "2030-04-01T00:00:00+02:00"
+        );
+        assert_eq!((end - start).num_hours(), 23);
+    }
+
+    #[test]
     fn rejects_naive_datetime_in_dst_gap() {
         let result = parse_start_datetime_in_time_zone("2026-03-29T02:30", Some("Europe/Berlin"));
 
