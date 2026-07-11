@@ -196,6 +196,19 @@ A dry run never replaces user confirmation. Use `--if-exists skip` for
 retry-safe creation only after previewing the match. Use `update` only when the
 user has confirmed the supplied non-identity patches.
 
+For a strict structured reminder draft, use
+`icalctl reminders add --json-file FILE --dry-run --json`. Do not combine the
+file with a title or individual reminder fields. Inspect every resolved field
+and exact list just as for flag-based creation.
+
+For a versioned reminder batch, use
+`icalctl reminders batch add --file FILE --dry-run --json`. Inspect every row,
+resolved list id, planned action, alarm, recurrence, and preflight error. Require
+unique `client_id` values when supplied. Any preflight error blocks all writes
+unless `--continue-on-error` is explicit; disclose that it permits partial
+writes and obtain confirmation for every planned create or update before the
+live command. Prefer `--if-exists skip` for retry-safe batches.
+
 ## Required Workflow for Reminder Lifecycle Changes
 
 For reminder updates, moves, completion changes, and deletion:
@@ -424,6 +437,17 @@ to `error`; `skip` returns the existing reminder and `update` changes only
 supplied non-identity fields. `--duplicate-window-seconds` applies only to
 timed due matching. Date-only and undated identities stay exact. No alarms are
 added unless a notification or geofence option is supplied.
+
+Structured single-reminder JSON uses the same fields and validation as add
+flags. Reminder batch JSON uses `version: 1`, optional `defaults`, and a
+`reminders` array. Defaults may provide list selection, timezone, priority,
+alarms, geofence, and recurrence. Unknown fields, duplicate client ids, and
+duplicate resolved identities fail preflight. Do not invent a second reminder
+schema or bypass the normal add pipeline.
+Inherited timezones apply only to timezone-less timed due/start values. A row
+may set `time_zone`, `geofence`, or `recurrence` to `null` to clear that
+default; omission inherits it. The batch pins each write to the exact list id
+shown by preflight.
 
 Only use the public EventKit reminder surface. Do not inspect private selectors,
 use KVC for Reminders.app-only metadata, or edit the Calendar database. Flags,

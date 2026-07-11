@@ -260,6 +260,20 @@ fn create_read_back_clear_and_delete_advanced_reminder() {
         3
     );
 
+    let completed = run(&[
+        "reminders",
+        "complete",
+        &id,
+        "--completed-at",
+        "2099-12-29T12:34:56.789123+00:00",
+        "--json",
+    ]);
+    assert!(completed.status.success());
+    assert_eq!(json(&completed)["reminder"]["completed"], true);
+    let uncompleted = run(&["reminders", "uncomplete", &id, "--json"]);
+    assert!(uncompleted.status.success());
+    assert_eq!(json(&uncompleted)["reminder"]["completed"], false);
+
     let cleared = run(&[
         "reminders",
         "update",

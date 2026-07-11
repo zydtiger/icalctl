@@ -39,6 +39,9 @@ pub enum JsonOutput {
     ReminderDeleted {
         deleted: ReminderDeletedReport,
     },
+    ReminderBatch {
+        batch: ReminderBatchReport,
+    },
     Events {
         events: Vec<EventReport>,
     },
@@ -60,6 +63,7 @@ pub enum JsonOutput {
 impl JsonOutput {
     pub fn has_failures(&self) -> bool {
         matches!(self, Self::Batch { batch } if batch.summary.failed > 0 || batch.summary.not_attempted > 0)
+            || matches!(self, Self::ReminderBatch { batch } if batch.summary.failed > 0 || batch.summary.not_attempted > 0)
     }
 }
 
@@ -269,6 +273,28 @@ pub struct ReminderDeletedReport {
     pub title: String,
     pub list: Option<String>,
     pub list_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReminderBatchReport {
+    pub version: u8,
+    pub dry_run: bool,
+    pub can_write: bool,
+    pub if_exists: String,
+    pub continue_on_error: bool,
+    pub summary: BatchSummaryReport,
+    pub items: Vec<ReminderBatchItemReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReminderBatchItemReport {
+    pub index: usize,
+    pub client_id: Option<String>,
+    pub status: String,
+    pub reminder_id: Option<String>,
+    pub matched_reminder_id: Option<String>,
+    pub draft: Option<Box<ReminderDraftReport>>,
+    pub error: Option<BatchErrorReport>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

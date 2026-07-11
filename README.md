@@ -261,6 +261,11 @@ due-relative time notifications. The preview also reports the single recurrence
 rule when supplied. Lifecycle previews use `reminder_mutation_dry_run` with before/result
 reminder objects and `changed_fields`; successful deletion uses
 `reminder_deleted` with the deleted reminder and list ids.
+Reminder batch output uses `reminder_batch`, schema version 1, per-row
+`index`, `client_id`, `status`, `reminder_id`, `matched_reminder_id`, `draft`,
+and `error` fields, and the same summary counters as event batches. Consumers
+should treat a nonzero failed or not-attempted count as an unsuccessful command
+result.
 
 The current JSON contract is schema generation 1. Consumers should dispatch on
 the top-level `type`, treat documented fields as stable, and tolerate additive
@@ -525,6 +530,36 @@ icalctl reminders add "Submit report" \
   --dry-run --json
 ```
 
+Use a strict structured JSON draft when shell flags are inconvenient:
+
+```sh
+icalctl reminders add --json-file reminder.json --if-exists skip --dry-run --json
+```
+
+Example `reminder.json`:
+
+```json
+{
+  "title": "Review budget",
+  "list_id": "LIST_ID",
+  "due": "2026-07-15T09:00:00+03:00",
+  "notes": "Review the final numbers",
+  "priority": "high",
+  "notify_at": ["2026-07-15T07:00:00+03:00"],
+  "recurrence": {
+    "frequency": "monthly",
+    "interval": 1,
+    "count": 12
+  }
+}
+```
+
+The object rejects unknown fields and supports the same list selectors,
+due/start/timezone values, content, priority, alarms, geofence, and recurrence
+as flag-based add. `client_id` is reserved for batch rows. Keep duplicate,
+dry-run, and output policy on the command. Do not combine `--json-file` with a
+positional title or individual reminder fields.
+
 Omitting `--due` creates an undated reminder. `YYYY-MM-DD` remains a true
 date-only value. For timezone-less timed values, `--time-zone` selects the IANA
 zone; without it, the Mac local zone is used. An explicit RFC3339 offset always
@@ -602,6 +637,55 @@ clear, and delete an advanced reminder only in an exact writable
 `icalctl Test` list. Set `ICALCTL_RUN_REMINDER_EVENTKIT_TESTS=1` and
 `ICALCTL_TEST_REMINDER_LIST_ID` before running that single ignored test; normal
 test runs never write Reminders data.
+
+Create multiple reminders with a versioned batch file:
+
+```sh
+icalctl reminders batch add --file reminders.json \
+  --if-exists skip --dry-run --json
+```
+
+Canonical `reminders.json` shape:
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "list_id": "LIST_ID",
+    "time_zone": "Europe/Helsinki",
+    "priority": "medium"
+  },
+  "reminders": [
+    {
+      "client_id": "submit-report",
+      "title": "Submit report",
+      "due": "2026-07-15"
+    },
+    {
+      "client_id": "call-dentist",
+      "title": "Call dentist",
+      "due": "2026-07-16T14:30",
+      "notify_minutes_before": [30]
+    }
+  ]
+}
+```
+
+Batch defaults support list selection, timezone, priority, alarms, geofence,
+and recurrence. Rows override defaults with their own values. Every row is
+strict and must have a unique `client_id` when one is supplied. Duplicate
+resolved list/title/due identities within the file fail preflight.
+An inherited timezone applies only to timezone-less timed due/start values, so
+date-only and undated rows can safely share the same batch. Set a row's
+`time_zone`, `geofence`, or `recurrence` to `null` to opt out of that default;
+omitting the field inherits it. Live writes are pinned to the exact list id
+resolved and reported by preflight.
+
+By default, any preflight error blocks all writes. `--continue-on-error` allows
+valid rows to proceed despite invalid rows or later write failures; disclose
+that partial-write behavior before confirmation because EventKit cannot roll
+back earlier reminders. Confirm every planned create or update and exact target
+list before the live batch invocation.
 
 Create one simple recurrence rule anchored by a due or start date:
 

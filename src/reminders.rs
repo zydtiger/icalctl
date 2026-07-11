@@ -1,6 +1,6 @@
 use crate::cache::resolve_reminder_ref;
 use crate::cli::{
-    IfExistsArg, ReadReminderListSelectorArgs, ReminderAdvancedScheduleArgs,
+    IfExistsArg, ReadReminderListSelectorArgs, ReminderAdvancedScheduleArgs, ReminderBatchCommand,
     ReminderGeofenceProximityArg, ReminderPriorityArg, ReminderReadFilterArgs, ReminderRepeatArg,
     ReminderStateArg, RemindersCommand, WriteReminderListSelectorArgs,
 };
@@ -8,7 +8,8 @@ use crate::dates::{
     parse_end_datetime, parse_start_datetime, parse_start_datetime_in_time_zone, validate_time_zone,
 };
 use crate::models::{
-    JsonOutput, ReminderAlarmReport, ReminderDateKind, ReminderDateReport, ReminderDeletedReport,
+    BatchErrorReport, BatchSummaryReport, JsonOutput, ReminderAlarmReport, ReminderBatchItemReport,
+    ReminderBatchReport, ReminderDateKind, ReminderDateReport, ReminderDeletedReport,
     ReminderDraftReport, ReminderListReport, ReminderListSelection, ReminderMutationDraftReport,
     ReminderNotificationReport, ReminderPlannedAlarmReport, ReminderPriority,
     ReminderRecurrenceEndReport, ReminderRecurrenceReport, ReminderReport,
@@ -32,8 +33,10 @@ use objc2_foundation::{
     NSArray, NSCalendar, NSCalendarIdentifierGregorian, NSDate, NSDateComponentUndefined,
     NSDateComponents, NSError, NSNumber, NSString, NSTimeZone, NSURL,
 };
+use serde::{Deserialize, Deserializer};
+use serde_json::Value;
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
 use std::fs;
 use std::io::Write as IoWrite;
@@ -101,6 +104,7 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
         }
         RemindersCommand::Add {
             title,
+            json_file,
             list_selector,
             due,
             start,
@@ -116,10 +120,11 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
             if_exists,
             duplicate_window_seconds,
             dry_run,
-        } => add_reminder(
+        } => add_reminder_from_cli(
             store,
-            AddReminderCommand {
+            AddReminderCliCommand {
                 title,
+                json_file,
                 list_selector,
                 due,
                 start,
@@ -137,6 +142,14 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
                 dry_run,
             },
         ),
+        RemindersCommand::Batch { command } => match command {
+            ReminderBatchCommand::Add {
+                file,
+                if_exists,
+                dry_run,
+                continue_on_error,
+            } => reminder_batch_add(store, &file, if_exists, dry_run, continue_on_error),
+        },
         RemindersCommand::Update {
             id,
             title,
@@ -199,6 +212,27 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
     }
 }
 
+struct AddReminderCliCommand {
+    title: Option<String>,
+    json_file: Option<PathBuf>,
+    list_selector: WriteReminderListSelectorArgs,
+    due: Option<String>,
+    start: Option<String>,
+    time_zone: Option<String>,
+    notes: Option<String>,
+    notes_file: Option<PathBuf>,
+    url: Option<String>,
+    location: Option<String>,
+    priority: Option<ReminderPriorityArg>,
+    notify_at_due: bool,
+    notify_minutes_before: Vec<i64>,
+    schedule: ReminderAdvancedScheduleArgs,
+    if_exists: IfExistsArg,
+    duplicate_window_seconds: i64,
+    dry_run: bool,
+}
+
+#[derive(Clone)]
 struct AddReminderCommand {
     title: String,
     list_selector: WriteReminderListSelectorArgs,
@@ -332,6 +366,669 @@ struct ReminderDateComponents {
 enum ComponentTimeZone {
     Named(String),
     FixedOffset(i32),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReminderJsonGeofence {
+    title: String,
+    latitude: f64,
+    longitude: f64,
+    radius_meters: f64,
+    proximity: ReminderGeofenceProximityArg,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReminderJsonRecurrence {
+    frequency: ReminderRepeatArg,
+    interval: Option<usize>,
+    count: Option<usize>,
+    until: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReminderJsonDraft {
+    client_id: Option<String>,
+    title: String,
+    list: Option<String>,
+    list_id: Option<String>,
+    list_source: Option<String>,
+    source_id: Option<String>,
+    due: Option<String>,
+    start: Option<String>,
+    #[serde(default)]
+    time_zone: ReminderJsonOverride<String>,
+    notes: Option<String>,
+    url: Option<String>,
+    location: Option<String>,
+    priority: Option<ReminderPriorityArg>,
+    notify_at_due: Option<bool>,
+    notify_minutes_before: Option<Vec<i64>>,
+    notify_at: Option<Vec<String>>,
+    #[serde(default)]
+    geofence: ReminderJsonOverride<ReminderJsonGeofence>,
+    #[serde(default)]
+    recurrence: ReminderJsonOverride<ReminderJsonRecurrence>,
+}
+
+#[derive(Clone, Debug, Default)]
+enum ReminderJsonOverride<T> {
+    #[default]
+    Missing,
+    Null,
+    Value(T),
+}
+
+impl<'de, T> Deserialize<'de> for ReminderJsonOverride<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            Some(value) => Self::Value(value),
+            None => Self::Null,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReminderBatchDefaults {
+    list: Option<String>,
+    list_id: Option<String>,
+    list_source: Option<String>,
+    source_id: Option<String>,
+    time_zone: Option<String>,
+    priority: Option<ReminderPriorityArg>,
+    notify_at_due: Option<bool>,
+    notify_minutes_before: Option<Vec<i64>>,
+    notify_at: Option<Vec<String>>,
+    geofence: Option<ReminderJsonGeofence>,
+    recurrence: Option<ReminderJsonRecurrence>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReminderBatchEnvelope {
+    version: u8,
+    #[serde(default)]
+    defaults: ReminderBatchDefaults,
+    reminders: Vec<Value>,
+}
+
+fn add_reminder_from_cli(
+    store: &impl ReminderStore,
+    input: AddReminderCliCommand,
+) -> Result<JsonOutput> {
+    let command = if let Some(path) = input.json_file.as_deref() {
+        if add_cli_has_individual_fields(&input) {
+            bail!("--json-file cannot be combined with a title or individual reminder fields");
+        }
+        let contents = read_notes_file(path)
+            .with_context(|| format!("failed to read reminder JSON file {}", path.display()))?;
+        let draft: ReminderJsonDraft = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse reminder JSON file {}", path.display()))?;
+        if draft.client_id.is_some() {
+            bail!("client_id is only valid in reminder batch files");
+        }
+        json_draft_to_command(
+            &ReminderBatchDefaults::default(),
+            draft,
+            input.if_exists,
+            input.duplicate_window_seconds,
+            input.dry_run,
+        )?
+    } else {
+        AddReminderCommand {
+            title: input
+                .title
+                .context("reminder add requires TITLE or --json-file")?,
+            list_selector: input.list_selector,
+            due: input.due,
+            start: input.start,
+            time_zone: input.time_zone,
+            notes: input.notes,
+            notes_file: input.notes_file,
+            url: input.url,
+            location: input.location,
+            priority: input.priority,
+            notify_at_due: input.notify_at_due,
+            notify_minutes_before: input.notify_minutes_before,
+            schedule: input.schedule,
+            if_exists: input.if_exists,
+            duplicate_window_seconds: input.duplicate_window_seconds,
+            dry_run: input.dry_run,
+        }
+    };
+    add_reminder(store, command)
+}
+
+fn add_cli_has_individual_fields(input: &AddReminderCliCommand) -> bool {
+    input.title.is_some()
+        || !write_list_selector_is_empty(&input.list_selector)
+        || input.due.is_some()
+        || input.start.is_some()
+        || input.time_zone.is_some()
+        || input.notes.is_some()
+        || input.notes_file.is_some()
+        || input.url.is_some()
+        || input.location.is_some()
+        || input.priority.is_some()
+        || input.notify_at_due
+        || !input.notify_minutes_before.is_empty()
+        || !advanced_schedule_is_empty(&input.schedule)
+}
+
+fn advanced_schedule_is_empty(schedule: &ReminderAdvancedScheduleArgs) -> bool {
+    schedule.notify_at.is_empty()
+        && schedule.geofence_title.is_none()
+        && schedule.geofence_latitude.is_none()
+        && schedule.geofence_longitude.is_none()
+        && schedule.geofence_radius_meters.is_none()
+        && schedule.geofence_proximity.is_none()
+        && schedule.repeat.is_none()
+        && schedule.repeat_interval.is_none()
+        && schedule.repeat_count.is_none()
+        && schedule.repeat_until.is_none()
+}
+
+fn json_draft_to_command(
+    defaults: &ReminderBatchDefaults,
+    draft: ReminderJsonDraft,
+    if_exists: IfExistsArg,
+    duplicate_window_seconds: i64,
+    dry_run: bool,
+) -> Result<AddReminderCommand> {
+    let has_timezone_less_timed_date = reminder_has_timezone_less_timed_date(&draft);
+    let item_has_selector = draft.list.is_some()
+        || draft.list_id.is_some()
+        || draft.list_source.is_some()
+        || draft.source_id.is_some();
+    let (list, list_id, list_source, source_id) = if item_has_selector {
+        (
+            draft.list,
+            draft.list_id,
+            draft.list_source,
+            draft.source_id,
+        )
+    } else {
+        (
+            defaults.list.clone(),
+            defaults.list_id.clone(),
+            defaults.list_source.clone(),
+            defaults.source_id.clone(),
+        )
+    };
+    validate_json_list_selector(
+        list.as_deref(),
+        list_id.as_deref(),
+        list_source.as_deref(),
+        source_id.as_deref(),
+    )?;
+    let geofence = reminder_json_override(draft.geofence, &defaults.geofence);
+    let recurrence = reminder_json_override(draft.recurrence, &defaults.recurrence);
+    let time_zone = match draft.time_zone {
+        ReminderJsonOverride::Value(value) => Some(value),
+        ReminderJsonOverride::Null => None,
+        ReminderJsonOverride::Missing => has_timezone_less_timed_date
+            .then(|| defaults.time_zone.clone())
+            .flatten(),
+    };
+    let schedule = ReminderAdvancedScheduleArgs {
+        notify_at: draft
+            .notify_at
+            .or_else(|| defaults.notify_at.clone())
+            .unwrap_or_default(),
+        geofence_title: geofence.as_ref().map(|value| value.title.clone()),
+        geofence_latitude: geofence.as_ref().map(|value| value.latitude),
+        geofence_longitude: geofence.as_ref().map(|value| value.longitude),
+        geofence_radius_meters: geofence.as_ref().map(|value| value.radius_meters),
+        geofence_proximity: geofence.as_ref().map(|value| value.proximity),
+        repeat: recurrence.as_ref().map(|value| value.frequency),
+        repeat_interval: recurrence.as_ref().and_then(|value| value.interval),
+        repeat_count: recurrence.as_ref().and_then(|value| value.count),
+        repeat_until: recurrence.and_then(|value| value.until),
+    };
+    Ok(AddReminderCommand {
+        title: draft.title,
+        list_selector: WriteReminderListSelectorArgs {
+            list,
+            list_id,
+            list_source,
+            source_id,
+        },
+        due: draft.due,
+        start: draft.start,
+        time_zone,
+        notes: draft.notes,
+        notes_file: None,
+        url: draft.url,
+        location: draft.location,
+        priority: draft.priority.or(defaults.priority),
+        notify_at_due: draft
+            .notify_at_due
+            .or(defaults.notify_at_due)
+            .unwrap_or(false),
+        notify_minutes_before: draft
+            .notify_minutes_before
+            .or_else(|| defaults.notify_minutes_before.clone())
+            .unwrap_or_default(),
+        schedule,
+        if_exists,
+        duplicate_window_seconds,
+        dry_run,
+    })
+}
+
+fn reminder_json_override<T: Clone>(
+    value: ReminderJsonOverride<T>,
+    default: &Option<T>,
+) -> Option<T> {
+    match value {
+        ReminderJsonOverride::Missing => default.clone(),
+        ReminderJsonOverride::Null => None,
+        ReminderJsonOverride::Value(value) => Some(value),
+    }
+}
+
+fn reminder_has_timezone_less_timed_date(draft: &ReminderJsonDraft) -> bool {
+    [draft.due.as_deref(), draft.start.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|value| {
+            NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err()
+                && DateTime::parse_from_rfc3339(value).is_err()
+        })
+}
+
+fn validate_json_list_selector(
+    list: Option<&str>,
+    list_id: Option<&str>,
+    list_source: Option<&str>,
+    source_id: Option<&str>,
+) -> Result<()> {
+    if list_id.is_some() && (list.is_some() || list_source.is_some() || source_id.is_some()) {
+        bail!("list_id cannot be combined with list, list_source, or source_id");
+    }
+    if list_source.is_some() && source_id.is_some() {
+        bail!("list_source and source_id cannot be combined");
+    }
+    if (list_source.is_some() || source_id.is_some()) && list.is_none() {
+        bail!("list_source and source_id require list");
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ReminderBatchIdentity {
+    list_id: String,
+    title: String,
+    due: String,
+}
+
+struct ReminderBatchSlot {
+    index: usize,
+    client_id: Option<String>,
+    command: Option<AddReminderCommand>,
+    draft: Option<ReminderDraftReport>,
+    error: Option<String>,
+}
+
+fn reminder_batch_add(
+    store: &impl ReminderStore,
+    path: &Path,
+    if_exists: IfExistsArg,
+    dry_run: bool,
+    continue_on_error: bool,
+) -> Result<JsonOutput> {
+    let contents = fs::read(path)
+        .with_context(|| format!("failed to read reminder batch file {}", path.display()))?;
+    let envelope: ReminderBatchEnvelope = serde_json::from_slice(&contents)
+        .with_context(|| format!("failed to parse reminder batch file {}", path.display()))?;
+    if envelope.version != 1 {
+        bail!(
+            "unsupported reminder batch version {}; expected 1",
+            envelope.version
+        );
+    }
+    if envelope.reminders.is_empty() {
+        bail!("reminder batch must contain at least one reminder");
+    }
+    validate_json_list_selector(
+        envelope.defaults.list.as_deref(),
+        envelope.defaults.list_id.as_deref(),
+        envelope.defaults.list_source.as_deref(),
+        envelope.defaults.source_id.as_deref(),
+    )?;
+    store.ensure_authorized()?;
+
+    let mut slots = envelope
+        .reminders
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let client_id = value
+                .get("client_id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            match serde_json::from_value::<ReminderJsonDraft>(value) {
+                Ok(draft) => {
+                    let client_id = draft.client_id.clone();
+                    match json_draft_to_command(&envelope.defaults, draft, if_exists, 0, true) {
+                        Ok(command) => ReminderBatchSlot {
+                            index,
+                            client_id,
+                            command: Some(command),
+                            draft: None,
+                            error: None,
+                        },
+                        Err(error) => ReminderBatchSlot {
+                            index,
+                            client_id,
+                            command: None,
+                            draft: None,
+                            error: Some(format!("invalid reminder: {error:#}")),
+                        },
+                    }
+                }
+                Err(error) => ReminderBatchSlot {
+                    index,
+                    client_id,
+                    command: None,
+                    draft: None,
+                    error: Some(format!("invalid reminder: {error}")),
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    mark_duplicate_reminder_client_ids(&mut slots);
+
+    for slot in &mut slots {
+        if slot.error.is_some() {
+            continue;
+        }
+        let command = slot
+            .command
+            .as_ref()
+            .expect("batch command is present")
+            .clone();
+        match add_reminder(store, command) {
+            Ok(JsonOutput::ReminderDryRun { draft, .. }) => {
+                if let Some(command) = slot.command.as_mut() {
+                    command.list_selector = WriteReminderListSelectorArgs {
+                        list: None,
+                        list_id: Some(draft.list_id.clone()),
+                        list_source: None,
+                        source_id: None,
+                    };
+                }
+                slot.draft = Some(*draft);
+            }
+            Ok(_) => slot.error = Some("reminder preflight returned unexpected output".to_string()),
+            Err(error) => slot.error = Some(format!("{error:#}")),
+        }
+    }
+    mark_duplicate_reminder_identities(&mut slots);
+
+    let has_preflight_errors = slots.iter().any(|slot| slot.error.is_some());
+    let can_write = !has_preflight_errors || continue_on_error;
+    let items = if dry_run {
+        reminder_batch_dry_reports(&slots)
+    } else if has_preflight_errors && !continue_on_error {
+        reminder_batch_blocked_reports(&slots)
+    } else {
+        reminder_batch_execute(store, &slots, continue_on_error)
+    };
+    let summary = summarize_reminder_batch(&items);
+    Ok(JsonOutput::ReminderBatch {
+        batch: ReminderBatchReport {
+            version: 1,
+            dry_run,
+            can_write,
+            if_exists: if_exists_name(if_exists).to_string(),
+            continue_on_error,
+            summary,
+            items,
+        },
+    })
+}
+
+fn mark_duplicate_reminder_client_ids(slots: &mut [ReminderBatchSlot]) {
+    let mut positions: HashMap<String, Vec<usize>> = HashMap::new();
+    for (position, slot) in slots.iter().enumerate() {
+        if let Some(client_id) = &slot.client_id {
+            positions
+                .entry(client_id.clone())
+                .or_default()
+                .push(position);
+        }
+    }
+    for (client_id, positions) in positions {
+        if positions.len() > 1 {
+            for position in positions {
+                slots[position].error = Some(format!("duplicate client_id: {client_id:?}"));
+            }
+        }
+    }
+}
+
+fn mark_duplicate_reminder_identities(slots: &mut [ReminderBatchSlot]) {
+    let mut positions: HashMap<ReminderBatchIdentity, Vec<usize>> = HashMap::new();
+    for (position, slot) in slots.iter().enumerate() {
+        if slot.error.is_none()
+            && let Some(draft) = &slot.draft
+        {
+            let due = match draft.due.as_ref() {
+                None => "undated".to_string(),
+                Some(due) if due.kind == ReminderDateKind::Date => {
+                    format!("date:{}", due.date.as_deref().unwrap_or("invalid"))
+                }
+                Some(due) => format!("datetime:{}", due.utc.as_deref().unwrap_or("invalid")),
+            };
+            positions
+                .entry(ReminderBatchIdentity {
+                    list_id: draft.list_id.clone(),
+                    title: draft.title.clone(),
+                    due,
+                })
+                .or_default()
+                .push(position);
+        }
+    }
+    for positions in positions.into_values() {
+        if positions.len() > 1 {
+            let rows = positions
+                .iter()
+                .map(|position| (slots[*position].index + 1).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            for position in positions {
+                slots[position].error = Some(format!(
+                    "duplicate reminder identity within batch at rows {rows}"
+                ));
+            }
+        }
+    }
+}
+
+fn reminder_batch_dry_reports(slots: &[ReminderBatchSlot]) -> Vec<ReminderBatchItemReport> {
+    slots
+        .iter()
+        .map(|slot| {
+            if let Some(error) = &slot.error {
+                return reminder_batch_error_report(slot, "failed", error.clone());
+            }
+            let draft = slot.draft.as_ref().expect("batch draft is present");
+            let status = match draft.operation.as_str() {
+                "create" => "would_create",
+                "skip" => "would_skip",
+                "update" => "would_update",
+                _ => "failed",
+            };
+            reminder_batch_planned_report(slot, status, None)
+        })
+        .collect()
+}
+
+fn reminder_batch_blocked_reports(slots: &[ReminderBatchSlot]) -> Vec<ReminderBatchItemReport> {
+    slots
+        .iter()
+        .map(|slot| {
+            if let Some(error) = &slot.error {
+                reminder_batch_error_report(slot, "failed", error.clone())
+            } else {
+                reminder_batch_planned_report(
+                    slot,
+                    "not_attempted",
+                    Some("reminder batch blocked by preflight errors".to_string()),
+                )
+            }
+        })
+        .collect()
+}
+
+fn reminder_batch_execute(
+    store: &impl ReminderStore,
+    slots: &[ReminderBatchSlot],
+    continue_on_error: bool,
+) -> Vec<ReminderBatchItemReport> {
+    let mut stopped = false;
+    let mut reports = Vec::with_capacity(slots.len());
+    for slot in slots {
+        if let Some(error) = &slot.error {
+            reports.push(reminder_batch_error_report(slot, "failed", error.clone()));
+            continue;
+        }
+        if stopped {
+            reports.push(reminder_batch_planned_report(
+                slot,
+                "not_attempted",
+                Some("not attempted after an earlier reminder write failure".to_string()),
+            ));
+            continue;
+        }
+        let mut command = slot
+            .command
+            .as_ref()
+            .expect("batch command is present")
+            .clone();
+        command.dry_run = false;
+        match add_reminder(store, command) {
+            Ok(JsonOutput::Reminder { reminder }) => {
+                let status = reminder
+                    .write_action
+                    .as_deref()
+                    .unwrap_or("written")
+                    .to_string();
+                let mut executed_draft = slot.draft.clone();
+                if let Some(draft) = executed_draft.as_mut() {
+                    draft.operation = match status.as_str() {
+                        "created" => "create",
+                        "skipped" => "skip",
+                        "updated" => "update",
+                        other => other,
+                    }
+                    .to_string();
+                    draft.matched_reminder_id = matches!(status.as_str(), "skipped" | "updated")
+                        .then(|| reminder.id.clone());
+                }
+                let matched_reminder_id =
+                    matches!(status.as_str(), "skipped" | "updated").then(|| reminder.id.clone());
+                reports.push(ReminderBatchItemReport {
+                    index: slot.index,
+                    client_id: slot.client_id.clone(),
+                    status,
+                    reminder_id: Some(reminder.id.clone()),
+                    matched_reminder_id,
+                    draft: executed_draft.map(Box::new),
+                    error: None,
+                });
+            }
+            Ok(_) => {
+                reports.push(reminder_batch_error_report(
+                    slot,
+                    "failed",
+                    "reminder write returned unexpected output".to_string(),
+                ));
+                if !continue_on_error {
+                    stopped = true;
+                }
+            }
+            Err(error) => {
+                reports.push(reminder_batch_error_report(
+                    slot,
+                    "failed",
+                    format!("{error:#}"),
+                ));
+                if !continue_on_error {
+                    stopped = true;
+                }
+            }
+        }
+    }
+    reports
+}
+
+fn reminder_batch_planned_report(
+    slot: &ReminderBatchSlot,
+    status: &str,
+    error: Option<String>,
+) -> ReminderBatchItemReport {
+    let draft = slot.draft.as_ref();
+    ReminderBatchItemReport {
+        index: slot.index,
+        client_id: slot.client_id.clone(),
+        status: status.to_string(),
+        reminder_id: None,
+        matched_reminder_id: draft.and_then(|draft| draft.matched_reminder_id.clone()),
+        draft: draft.cloned().map(Box::new),
+        error: error.map(|message| BatchErrorReport { message }),
+    }
+}
+
+fn reminder_batch_error_report(
+    slot: &ReminderBatchSlot,
+    status: &str,
+    message: String,
+) -> ReminderBatchItemReport {
+    ReminderBatchItemReport {
+        index: slot.index,
+        client_id: slot.client_id.clone(),
+        status: status.to_string(),
+        reminder_id: None,
+        matched_reminder_id: slot
+            .draft
+            .as_ref()
+            .and_then(|draft| draft.matched_reminder_id.clone()),
+        draft: slot.draft.clone().map(Box::new),
+        error: Some(BatchErrorReport { message }),
+    }
+}
+
+fn summarize_reminder_batch(items: &[ReminderBatchItemReport]) -> BatchSummaryReport {
+    let mut summary = BatchSummaryReport {
+        total: items.len(),
+        ..Default::default()
+    };
+    for item in items {
+        match item.status.as_str() {
+            "created" => summary.created += 1,
+            "skipped" => summary.skipped += 1,
+            "updated" => summary.updated += 1,
+            "failed" => summary.failed += 1,
+            "not_attempted" => summary.not_attempted += 1,
+            "would_create" => summary.would_create += 1,
+            "would_skip" => summary.would_skip += 1,
+            "would_update" => summary.would_update += 1,
+            _ => summary.failed += 1,
+        }
+    }
+    summary
 }
 
 fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Result<JsonOutput> {
@@ -2690,6 +3387,15 @@ mod tests {
     use objc2_foundation::{NSCalendar, NSTimeZone};
     use serde_json::json;
     use std::cell::{Cell, RefCell};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_test_path(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("icalctl-reminders-{name}-{nonce}.json"))
+    }
 
     fn list(id: &str, title: &str, source: &str, source_id: &str) -> ReminderListReport {
         ReminderListReport {
@@ -2770,6 +3476,8 @@ mod tests {
     struct FakeStore {
         lists: Vec<ReminderListReport>,
         default_list: ReminderListReport,
+        alternate_default_list: Option<ReminderListReport>,
+        default_list_calls: Cell<usize>,
         reminders: RefCell<Vec<ReminderReport>>,
         creates: Cell<usize>,
         updates: Cell<usize>,
@@ -2786,6 +3494,8 @@ mod tests {
             Self {
                 lists: vec![default_list.clone()],
                 default_list,
+                alternate_default_list: None,
+                default_list_calls: Cell::new(0),
                 reminders: RefCell::new(Vec::new()),
                 creates: Cell::new(0),
                 updates: Cell::new(0),
@@ -2811,6 +3521,13 @@ mod tests {
         }
 
         fn default_list(&self) -> Result<ReminderListReport> {
+            let calls = self.default_list_calls.get();
+            self.default_list_calls.set(calls + 1);
+            if calls > 0
+                && let Some(alternate) = &self.alternate_default_list
+            {
+                return Ok(alternate.clone());
+            }
             Ok(self.default_list.clone())
         }
 
@@ -4060,5 +4777,366 @@ mod tests {
         let first = nsdate_from_utc(notifications[0].absolute_utc);
         let second = nsdate_from_utc(notifications[1].absolute_utc);
         assert!(second.timeIntervalSince1970() > first.timeIntervalSince1970());
+    }
+
+    fn json_cli_command(path: PathBuf) -> AddReminderCliCommand {
+        AddReminderCliCommand {
+            title: None,
+            json_file: Some(path),
+            list_selector: write_selector(None),
+            due: None,
+            start: None,
+            time_zone: None,
+            notes: None,
+            notes_file: None,
+            url: None,
+            location: None,
+            priority: None,
+            notify_at_due: false,
+            notify_minutes_before: Vec::new(),
+            schedule: advanced_schedule(),
+            if_exists: IfExistsArg::Error,
+            duplicate_window_seconds: 0,
+            dry_run: true,
+        }
+    }
+
+    #[test]
+    fn structured_json_add_is_strict_and_uses_the_normal_dry_run_pipeline() {
+        let path = temporary_test_path("single");
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "title": "JSON task",
+                "list_id": "A",
+                "due": "2026-07-15T09:00:00+03:00",
+                "notes": "Exact notes",
+                "priority": "high",
+                "notify_at": ["2026-07-15T07:00:00+03:00"],
+                "recurrence": {"frequency": "weekly", "count": 4}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let store = FakeStore::new();
+        let output = add_reminder_from_cli(&store, json_cli_command(path.clone())).unwrap();
+        fs::remove_file(&path).unwrap();
+
+        let JsonOutput::ReminderDryRun { draft, .. } = output else {
+            panic!("expected reminder dry run");
+        };
+        assert_eq!(draft.title, "JSON task");
+        assert_eq!(draft.list_id, "A");
+        assert_eq!(draft.priority, ReminderPriority::High);
+        assert_eq!(draft.planned_alarm_count, 1);
+        assert_eq!(
+            draft.recurrence.as_ref().unwrap().end.occurrence_count,
+            Some(4)
+        );
+        assert_eq!(store.creates.get(), 0);
+
+        let path = temporary_test_path("unknown");
+        fs::write(&path, r#"{"title":"Task","unknown":true}"#).unwrap();
+        let error = format!(
+            "{:#}",
+            add_reminder_from_cli(&store, json_cli_command(path.clone())).unwrap_err()
+        );
+        fs::remove_file(path).unwrap();
+        assert!(error.contains("unknown field"));
+    }
+
+    #[test]
+    fn structured_json_add_rejects_mixed_cli_fields() {
+        let store = FakeStore::new();
+        let mut command = json_cli_command(PathBuf::from("unused.json"));
+        command.title = Some("CLI task".to_string());
+        assert!(
+            add_reminder_from_cli(&store, command)
+                .unwrap_err()
+                .to_string()
+                .contains("cannot be combined")
+        );
+    }
+
+    #[test]
+    fn reminder_batch_dry_run_merges_defaults_and_reports_plans() {
+        let path = temporary_test_path("batch-valid");
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "defaults": {"list_id": "A", "priority": "medium"},
+                "reminders": [
+                    {"client_id": "one", "title": "First", "due": "2026-07-15"},
+                    {
+                        "client_id": "two",
+                        "title": "Second",
+                        "due": "2026-07-16T09:00:00+03:00",
+                        "notify_at_due": true,
+                        "recurrence": {"frequency": "daily", "interval": 2, "count": 3}
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let store = FakeStore::new();
+        let output = reminder_batch_add(&store, &path, IfExistsArg::Error, true, false).unwrap();
+        fs::remove_file(path).unwrap();
+
+        let value = serde_json::to_value(&output).unwrap();
+        assert_eq!(value["type"], "reminder_batch");
+        assert_eq!(value["batch"]["version"], 1);
+        assert_eq!(value["batch"]["summary"]["would_create"], 2);
+
+        let JsonOutput::ReminderBatch { batch } = output else {
+            panic!("expected reminder batch");
+        };
+        assert!(batch.can_write);
+        assert_eq!(batch.summary.total, 2);
+        assert_eq!(batch.summary.would_create, 2);
+        assert_eq!(batch.items[0].client_id.as_deref(), Some("one"));
+        assert_eq!(
+            batch.items[0].draft.as_ref().unwrap().priority,
+            ReminderPriority::Medium
+        );
+        assert_eq!(batch.items[1].draft.as_ref().unwrap().notification_count, 1);
+        assert_eq!(store.creates.get(), 0);
+    }
+
+    #[test]
+    fn reminder_batch_timezone_default_only_applies_to_timed_rows() {
+        let path = temporary_test_path("batch-mixed-dates");
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "defaults": {"list_id": "A", "time_zone": "Europe/Helsinki"},
+                "reminders": [
+                    {"title": "Undated"},
+                    {"title": "Date only", "due": "2026-07-15"},
+                    {"title": "Timed", "due": "2026-07-16T09:00"}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let store = FakeStore::new();
+        let output = reminder_batch_add(&store, &path, IfExistsArg::Error, true, false).unwrap();
+        fs::remove_file(path).unwrap();
+
+        let JsonOutput::ReminderBatch { batch } = output else {
+            panic!("expected reminder batch");
+        };
+        assert!(batch.can_write);
+        assert_eq!(batch.summary.would_create, 3);
+        assert_eq!(batch.items[0].draft.as_ref().unwrap().due, None);
+        assert_eq!(
+            batch.items[1]
+                .draft
+                .as_ref()
+                .unwrap()
+                .due
+                .as_ref()
+                .unwrap()
+                .kind,
+            ReminderDateKind::Date
+        );
+        assert_eq!(
+            batch.items[2]
+                .draft
+                .as_ref()
+                .unwrap()
+                .due
+                .as_ref()
+                .unwrap()
+                .time_zone
+                .as_deref(),
+            Some("Europe/Helsinki")
+        );
+    }
+
+    #[test]
+    fn reminder_batch_null_clears_inherited_timezone_geofence_and_recurrence() {
+        let defaults: ReminderBatchDefaults = serde_json::from_value(json!({
+            "time_zone": "Europe/Helsinki",
+            "geofence": {
+                "title": "Office",
+                "latitude": 60.17,
+                "longitude": 24.94,
+                "radius_meters": 100.0,
+                "proximity": "arrive"
+            },
+            "recurrence": {"frequency": "daily"}
+        }))
+        .unwrap();
+        let draft: ReminderJsonDraft = serde_json::from_value(json!({
+            "title": "One-off",
+            "due": "2026-07-15T09:00",
+            "time_zone": null,
+            "geofence": null,
+            "recurrence": null
+        }))
+        .unwrap();
+        let command = json_draft_to_command(&defaults, draft, IfExistsArg::Error, 0, true).unwrap();
+
+        assert_eq!(command.time_zone, None);
+        assert!(advanced_schedule_is_empty(&command.schedule));
+
+        let explicit_offset: ReminderJsonDraft = serde_json::from_value(json!({
+            "title": "Offset",
+            "due": "2026-07-15T09:00:00+03:00"
+        }))
+        .unwrap();
+        let command =
+            json_draft_to_command(&defaults, explicit_offset, IfExistsArg::Error, 0, true).unwrap();
+        assert_eq!(command.time_zone, None);
+    }
+
+    #[test]
+    fn reminder_batch_pins_default_list_resolved_during_preflight() {
+        let path = temporary_test_path("batch-pinned-list");
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "reminders": [{"title": "Pinned target", "due": "2026-07-15"}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut store = FakeStore::new();
+        let alternate = list("B", "Other", "iCloud", "S1");
+        store.lists.push(alternate.clone());
+        store.alternate_default_list = Some(alternate);
+
+        let output = reminder_batch_add(&store, &path, IfExistsArg::Error, false, false).unwrap();
+        fs::remove_file(path).unwrap();
+        let JsonOutput::ReminderBatch { batch } = output else {
+            panic!("expected reminder batch");
+        };
+        assert_eq!(batch.summary.created, 1);
+        assert_eq!(batch.items[0].draft.as_ref().unwrap().list_id, "A");
+        assert_eq!(store.default_list_calls.get(), 1);
+    }
+
+    #[test]
+    fn reminder_batch_preflight_blocks_all_or_continues_explicitly() {
+        let contents = serde_json::to_vec(&json!({
+            "version": 1,
+            "defaults": {"list_id": "A"},
+            "reminders": [
+                {"client_id": "bad", "title": "Bad", "unknown": true},
+                {"client_id": "good", "title": "Good", "due": "2026-07-15"}
+            ]
+        }))
+        .unwrap();
+
+        let path = temporary_test_path("batch-blocked");
+        fs::write(&path, &contents).unwrap();
+        let store = FakeStore::new();
+        let output = reminder_batch_add(&store, &path, IfExistsArg::Error, false, false).unwrap();
+        let JsonOutput::ReminderBatch { batch } = output else {
+            panic!("expected reminder batch");
+        };
+        assert!(!batch.can_write);
+        assert_eq!(batch.summary.failed, 1);
+        assert_eq!(batch.summary.not_attempted, 1);
+        assert_eq!(store.creates.get(), 0);
+
+        let store = FakeStore::new();
+        let output = reminder_batch_add(&store, &path, IfExistsArg::Error, false, true).unwrap();
+        fs::remove_file(path).unwrap();
+        let JsonOutput::ReminderBatch { batch } = output else {
+            panic!("expected reminder batch");
+        };
+        assert!(batch.can_write);
+        assert_eq!(batch.summary.failed, 1);
+        assert_eq!(batch.summary.created, 1);
+        assert_eq!(store.creates.get(), 1);
+    }
+
+    #[test]
+    fn reminder_batch_rejects_duplicate_client_ids_and_identities() {
+        let path = temporary_test_path("batch-duplicates");
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "defaults": {"list_id": "A"},
+                "reminders": [
+                    {"client_id": "same", "title": "Task", "due": "2026-07-15"},
+                    {"client_id": "same", "title": "Other", "due": "2026-07-16"},
+                    {"client_id": "three", "title": "Duplicate", "due": "2026-07-17T09:00:00+03:00"},
+                    {"client_id": "four", "title": "Duplicate", "due": "2026-07-17T08:00:00+02:00"}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let store = FakeStore::new();
+        let output = reminder_batch_add(&store, &path, IfExistsArg::Skip, true, false).unwrap();
+        fs::remove_file(path).unwrap();
+        let JsonOutput::ReminderBatch { batch } = output else {
+            panic!("expected reminder batch");
+        };
+        assert_eq!(batch.summary.failed, 4);
+        assert!(
+            batch.items[0]
+                .error
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("client_id")
+        );
+        assert!(
+            batch.items[2]
+                .error
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("rows 3, 4")
+        );
+        assert_eq!(store.creates.get(), 0);
+    }
+
+    #[test]
+    fn reminder_batch_reports_existing_skip_and_update_actions() {
+        let path = temporary_test_path("batch-existing");
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "defaults": {"list_id": "A"},
+                "reminders": [{"client_id": "one", "title": "Existing", "due": "2026-07-15", "notes": "Changed"}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let store = FakeStore::new();
+        store
+            .reminders
+            .borrow_mut()
+            .push(reminder("R1", "Existing", false, Some("2026-07-15")));
+        let output = reminder_batch_add(&store, &path, IfExistsArg::Skip, true, false).unwrap();
+        let JsonOutput::ReminderBatch { batch } = output else {
+            panic!("expected reminder batch");
+        };
+        assert_eq!(batch.summary.would_skip, 1);
+        assert_eq!(batch.items[0].matched_reminder_id.as_deref(), Some("R1"));
+
+        let output = reminder_batch_add(&store, &path, IfExistsArg::Update, false, false).unwrap();
+        fs::remove_file(path).unwrap();
+        let JsonOutput::ReminderBatch { batch } = output else {
+            panic!("expected reminder batch");
+        };
+        assert_eq!(batch.summary.updated, 1);
+        assert_eq!(batch.items[0].status, "updated");
+        assert_eq!(batch.items[0].reminder_id.as_deref(), Some("R1"));
+        assert_eq!(batch.items[0].matched_reminder_id.as_deref(), Some("R1"));
+        let draft = batch.items[0].draft.as_ref().unwrap();
+        assert_eq!(draft.operation, "update");
+        assert_eq!(draft.matched_reminder_id.as_deref(), Some("R1"));
+        assert_eq!(store.updates.get(), 1);
     }
 }

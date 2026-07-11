@@ -86,7 +86,7 @@ pub struct ReadReminderListSelectorArgs {
     pub source_id: Option<String>,
 }
 
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Args)]
 pub struct WriteReminderListSelectorArgs {
     /// Reminder list title. Add defaults to EventKit's default; update keeps the current list.
     #[arg(short = 'l', long = "list")]
@@ -126,7 +126,7 @@ pub struct ReminderReadFilterArgs {
     pub due_to: Option<String>,
 }
 
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Args)]
 pub struct ReminderAdvancedScheduleArgs {
     /// Notify at an arbitrary RFC3339 instant with an explicit UTC offset. Repeatable.
     #[arg(long = "notify-at", value_name = "RFC3339")]
@@ -472,7 +472,11 @@ pub enum RemindersCommand {
     /// Create a reminder after resolving and validating its exact target list.
     Add {
         /// Reminder title.
-        title: String,
+        title: Option<String>,
+
+        /// Read a complete structured reminder draft from a strict JSON file.
+        #[arg(long, value_name = "PATH")]
+        json_file: Option<PathBuf>,
 
         #[command(flatten)]
         list_selector: WriteReminderListSelectorArgs,
@@ -531,6 +535,12 @@ pub enum RemindersCommand {
         /// Validate and print the resolved reminder without writing.
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// Safely create or reconcile multiple reminders from versioned JSON.
+    Batch {
+        #[command(subcommand)]
+        command: ReminderBatchCommand,
     },
 
     /// Patch an existing reminder; omitted fields remain unchanged.
@@ -665,6 +675,28 @@ pub enum RemindersCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum ReminderBatchCommand {
+    /// Create reminders from a versioned JSON batch file.
+    Add {
+        /// Path to the reminder batch file.
+        #[arg(long)]
+        file: PathBuf,
+
+        /// Behavior when a matching reminder already exists.
+        #[arg(long = "if-exists", value_enum, default_value_t = IfExistsArg::Error)]
+        if_exists: IfExistsArg,
+
+        /// Validate every row and report planned actions without writing.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Process valid rows despite preflight or write failures.
+        #[arg(long)]
+        continue_on_error: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum BatchCommand {
     /// Create events from a versioned JSON batch file.
     Add {
@@ -781,13 +813,15 @@ pub enum ReminderPriorityArg {
     High,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
 pub enum ReminderGeofenceProximityArg {
     Arrive,
     Leave,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
 pub enum ReminderRepeatArg {
     Daily,
     Weekly,
@@ -1325,7 +1359,7 @@ mod tests {
             cli.command,
             Command::Reminders {
                 command: RemindersCommand::Add {
-                    title,
+                    title: Some(title),
                     list_selector: WriteReminderListSelectorArgs {
                         list_id: Some(list_id),
                         ..
@@ -1638,5 +1672,62 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn reminder_add_accepts_json_file_without_positional_title() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "reminders",
+            "add",
+            "--json-file",
+            "reminder.json",
+            "--if-exists",
+            "skip",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Reminders {
+                command: RemindersCommand::Add {
+                    title: None,
+                    json_file: Some(path),
+                    if_exists: IfExistsArg::Skip,
+                    dry_run: true,
+                    ..
+                }
+            } if path.to_str() == Some("reminder.json")
+        ));
+    }
+
+    #[test]
+    fn reminder_batch_add_parses_safety_flags() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "reminders",
+            "batch",
+            "add",
+            "--file",
+            "reminders.json",
+            "--if-exists",
+            "update",
+            "--dry-run",
+            "--continue-on-error",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Reminders {
+                command: RemindersCommand::Batch {
+                    command: ReminderBatchCommand::Add {
+                        file,
+                        if_exists: IfExistsArg::Update,
+                        dry_run: true,
+                        continue_on_error: true,
+                    }
+                }
+            } if file.to_str() == Some("reminders.json")
+        ));
     }
 }

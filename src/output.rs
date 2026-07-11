@@ -1,8 +1,8 @@
 use crate::models::{
     AlarmReport, BatchReport, CalendarReport, EventDraftReport, EventReport, JsonOutput,
-    ReminderAlarmReport, ReminderDateKind, ReminderDateReport, ReminderDraftReport,
-    ReminderListReport, ReminderMutationDraftReport, ReminderRecurrenceEndReport,
-    ReminderRecurrenceReport, ReminderReport,
+    ReminderAlarmReport, ReminderBatchReport, ReminderDateKind, ReminderDateReport,
+    ReminderDraftReport, ReminderListReport, ReminderMutationDraftReport,
+    ReminderRecurrenceEndReport, ReminderRecurrenceReport, ReminderReport,
 };
 use chrono::DateTime;
 
@@ -74,6 +74,7 @@ pub fn print_human_output(output: &JsonOutput) {
         JsonOutput::ReminderDeleted { deleted } => {
             println!("Deleted reminder: {} [{}]", deleted.title, deleted.id);
         }
+        JsonOutput::ReminderBatch { batch } => print_reminder_batch(batch),
         JsonOutput::Events { events } => print_events(events),
         JsonOutput::Event { event } => print_event_detail(event),
         JsonOutput::DryRun { draft, .. } => print_dry_run(draft),
@@ -81,6 +82,55 @@ pub fn print_human_output(output: &JsonOutput) {
         JsonOutput::Deleted { deleted } => {
             println!("Deleted event: {} [{}]", deleted.title, deleted.id);
         }
+    }
+}
+
+fn print_reminder_batch(batch: &ReminderBatchReport) {
+    if batch.dry_run {
+        println!("Reminder batch dry run: no Reminders changes were made");
+    } else {
+        println!("Reminder batch result");
+    }
+    println!(
+        "total={} created={} skipped={} updated={} failed={} not_attempted={} would_create={} would_skip={} would_update={}",
+        batch.summary.total,
+        batch.summary.created,
+        batch.summary.skipped,
+        batch.summary.updated,
+        batch.summary.failed,
+        batch.summary.not_attempted,
+        batch.summary.would_create,
+        batch.summary.would_skip,
+        batch.summary.would_update,
+    );
+    if !batch.can_write {
+        println!("reminder batch is blocked by preflight errors");
+    }
+    for item in &batch.items {
+        let client_id = item
+            .client_id
+            .as_deref()
+            .map(|value| format!(" client_id={value:?}"))
+            .unwrap_or_default();
+        let reminder_id = item
+            .reminder_id
+            .as_deref()
+            .or(item.matched_reminder_id.as_deref())
+            .map(|value| format!(" reminder_id={value}"))
+            .unwrap_or_default();
+        let error = item
+            .error
+            .as_ref()
+            .map(|value| format!(" error={:?}", value.message))
+            .unwrap_or_default();
+        println!(
+            "{}. {}{}{}{}",
+            item.index + 1,
+            item.status,
+            client_id,
+            reminder_id,
+            error
+        );
     }
 }
 

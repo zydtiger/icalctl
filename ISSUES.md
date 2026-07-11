@@ -217,8 +217,9 @@ Acceptance checks:
 
 ## 13. Add first-class Apple Reminders support
 
-**Status: In progress.** Phases 1 through 4 are complete; Issue 13 remains open
-until all five phases are complete.
+**Status: Resolved.** All five phases are complete: public EventKit reminder
+reads, safe creation and lifecycle writes, advanced scheduling, strict JSON and
+batch input, guarded integration coverage, and agent confirmation safeguards.
 
 Implementation phases:
 
@@ -230,7 +231,7 @@ Implementation phases:
   agent confirmation rules.
 - [x] Phase 3: update, completion/uncompletion, list moves, and delete.
 - [x] Phase 4: absolute alarms, recurrence, geofences, and Location diagnostics.
-- [ ] Phase 5: structured JSON input, batch creation, guarded integration tests,
+- [x] Phase 5: structured JSON input, batch creation, guarded integration tests,
   documentation hardening, and final Issue 13 resolution.
 
 Problem: `icalctl` only manages calendar events even though EventKit also exposes
