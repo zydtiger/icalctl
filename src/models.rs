@@ -367,6 +367,8 @@ pub struct EventReport {
     pub has_notes: bool,
     pub has_url: bool,
     pub alarm_count: Option<usize>,
+    pub recurrence_count: Option<usize>,
+    pub recurrence_rules: Option<Vec<EventRecurrenceReport>>,
     pub is_detached: bool,
     pub occurrence_date: Option<String>,
     pub creation_date: Option<String>,
@@ -377,6 +379,33 @@ pub struct EventReport {
     pub attendees: Vec<ParticipantReport>,
     pub organizer: Option<ParticipantReport>,
     pub alarms: Option<Vec<AlarmReport>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct EventRecurrenceEndReport {
+    pub kind: String,
+    pub occurrence_count: Option<usize>,
+    pub end_date: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct EventRecurrenceReport {
+    pub frequency: String,
+    pub interval: usize,
+    pub first_day_of_week: isize,
+    pub end: EventRecurrenceEndReport,
+    pub days_of_week: Option<Vec<EventRecurrenceWeekdayReport>>,
+    pub days_of_month: Option<Vec<i32>>,
+    pub months_of_year: Option<Vec<i32>>,
+    pub weeks_of_year: Option<Vec<i32>>,
+    pub days_of_year: Option<Vec<i32>>,
+    pub set_positions: Option<Vec<i32>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct EventRecurrenceWeekdayReport {
+    pub weekday: isize,
+    pub week_number: isize,
 }
 
 #[derive(Debug, Serialize)]
@@ -535,6 +564,8 @@ impl From<&EventItem> for EventReport {
             has_notes: event.notes.is_some(),
             has_url: event.URL.is_some(),
             alarm_count: None,
+            recurrence_count: None,
+            recurrence_rules: None,
             is_detached: event.is_detached,
             occurrence_date: event.occurrence_date.map(|value| value.to_rfc3339()),
             creation_date: event.creation_date.map(|value| value.to_rfc3339()),
@@ -719,6 +750,45 @@ mod tests {
             report.end_in_event_time_zone.as_deref(),
             Some("2026-07-12T15:55:00+02:00")
         );
+
+        let summary = serde_json::to_value(&report).unwrap();
+        assert_eq!(summary["recurrence_count"], serde_json::Value::Null);
+        assert_eq!(summary["recurrence_rules"], serde_json::Value::Null);
+
+        let mut detail = report;
+        detail.is_detached = true;
+        detail.occurrence_date = Some("2026-07-05T12:55:00+00:00".to_string());
+        detail.recurrence_count = Some(0);
+        detail.recurrence_rules = Some(Vec::new());
+        let empty_detail = serde_json::to_value(&detail).unwrap();
+        assert_eq!(empty_detail["recurrence_count"], 0);
+        assert_eq!(empty_detail["recurrence_rules"], serde_json::json!([]));
+
+        detail.recurrence_count = Some(1);
+        detail.recurrence_rules = Some(vec![EventRecurrenceReport {
+            frequency: "weekly".to_string(),
+            interval: 1,
+            first_day_of_week: 2,
+            end: EventRecurrenceEndReport {
+                kind: "never".to_string(),
+                occurrence_count: None,
+                end_date: None,
+            },
+            days_of_week: Some(vec![EventRecurrenceWeekdayReport {
+                weekday: 2,
+                week_number: 0,
+            }]),
+            days_of_month: None,
+            months_of_year: None,
+            weeks_of_year: None,
+            days_of_year: None,
+            set_positions: None,
+        }]);
+        let value = serde_json::to_value(detail).unwrap();
+        assert_eq!(value["recurrence_count"], 1);
+        assert_eq!(value["recurrence_rules"][0]["frequency"], "weekly");
+        assert_eq!(value["is_detached"], true);
+        assert_eq!(value["occurrence_date"], "2026-07-05T12:55:00+00:00");
     }
 
     #[test]

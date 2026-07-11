@@ -1,4 +1,4 @@
-use crate::cache::resolve_event_ref;
+use crate::cache::{resolve_event_ref, resolve_event_show_ref};
 use crate::calendar_selector::{
     CalendarSelector, require_single_writable_calendar, resolve_calendars,
 };
@@ -12,16 +12,16 @@ use crate::dates::{
     validate_time_zone,
 };
 use crate::eventkit_bridge::{
-    create_event_in_calendar, update_event_calendar_metadata, validate_event_time_zone,
-    validate_event_url,
+    create_event_in_calendar, read_event_details, update_event_calendar_metadata,
+    validate_event_time_zone, validate_event_url,
 };
 use crate::models::{
-    AlarmReport, CalendarReport, CalendarSelection, DeletedReport, EventDraftReport, EventReport,
-    JsonOutput, StatusReport,
+    CalendarReport, CalendarSelection, DeletedReport, EventDraftReport, EventReport, JsonOutput,
+    StatusReport,
 };
 use crate::output::event_time_range;
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use eventkit::{
     AlarmInfo, AlarmProximity, AuthorizationStatus, CalendarInfo, EventAvailability, EventDraft,
     EventItem, EventKitError, EventPatch, EventsManager,
@@ -93,11 +93,18 @@ pub fn run(command: Command) -> Result<JsonOutput> {
                 .context("failed to list upcoming events")?;
             Ok(JsonOutput::Events { events })
         }
-        Command::Show { id } => {
-            let id = resolve_event_ref(&id)?;
+        Command::Show {
+            id,
+            occurrence_start,
+        } => {
+            let reference = resolve_event_show_ref(&id, occurrence_start)?;
             let events = authorized_events_manager()?;
             Ok(JsonOutput::Event {
-                event: Box::new(event_report_with_alarms(&events, &id)?),
+                event: Box::new(event_report_with_alarms(
+                    &events,
+                    &reference.id,
+                    reference.occurrence_start.as_deref(),
+                )?),
             })
         }
         Command::Search {
@@ -591,7 +598,7 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
                 existing.identifier
             ),
             IfExistsArg::Skip => {
-                let mut report = event_report_with_alarms(&events, &existing.identifier)?;
+                let mut report = event_report_with_alarms(&events, &existing.identifier, None)?;
                 report.calendar_selection = Some(selection);
                 report.write_action = Some("skipped".to_string());
                 report.start_input = Some(input.start);
@@ -625,7 +632,7 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
         .context("failed to create event through EventKit")?;
 
     add_relative_alarms(&events, &id, &input.alarm_minutes_before)?;
-    let mut report = event_report_with_alarms(&events, &id)?;
+    let mut report = event_report_with_alarms(&events, &id, None)?;
     report.calendar_selection = Some(selection);
     report.write_action = Some("created".to_string());
     report.start_input = Some(input.start);
@@ -666,7 +673,7 @@ fn update_existing_from_add(
         replace_relative_alarms(events, &event_id, &input.alarm_minutes_before)?;
     }
 
-    let mut report = event_report_with_alarms(events, &event_id)?;
+    let mut report = event_report_with_alarms(events, &event_id, None)?;
     report.calendar_selection = Some(selection);
     report.write_action = Some("updated".to_string());
     report.start_input = Some(input.start.clone());
@@ -857,7 +864,7 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
     };
 
     add_relative_alarms(&events, &id, &input.add_alarm_minutes_before)?;
-    let mut report = event_report_with_alarms(&events, &id)?;
+    let mut report = event_report_with_alarms(&events, &id, None)?;
     report.write_action = Some("updated".to_string());
     report.start_input = input.start;
     report.end_input = input.end;
@@ -1186,21 +1193,73 @@ pub(crate) fn replace_relative_alarms(
     add_relative_alarms(events, id, minutes_before)
 }
 
-fn event_report_with_alarms(events: &EventsManager, id: &str) -> Result<EventReport> {
-    let event = events
-        .get_event(id)
-        .with_context(|| format!("failed to reload event {id}"))?;
-    let alarms: Vec<AlarmReport> = events
-        .get_event_alarms(id)
-        .with_context(|| format!("failed to read alarms for event {id}"))?
-        .iter()
-        .map(AlarmReport::from)
-        .collect();
+fn event_report_with_alarms(
+    events: &EventsManager,
+    id: &str,
+    occurrence_start: Option<&str>,
+) -> Result<EventReport> {
+    let occurrence_start = occurrence_start
+        .map(parse_occurrence_start)
+        .transpose()
+        .with_context(|| format!("invalid occurrence start for event {id}"))?;
+    let event = match occurrence_start {
+        Some(start) => find_event_occurrence(events, id, start)?,
+        None => events
+            .get_event(id)
+            .with_context(|| format!("failed to reload event {id}"))?,
+    };
+    let details = read_event_details(id, occurrence_start)
+        .with_context(|| format!("failed to read alarms and recurrence for event {id}"))?;
     let calendars = list_calendars(events)?;
     let mut report = event_report(&event, &calendars);
-    report.alarm_count = Some(alarms.len());
-    report.alarms = Some(alarms);
+    report.alarm_count = Some(details.alarms.len());
+    report.alarms = Some(details.alarms);
+    report.recurrence_count = Some(details.recurrence_rules.len());
+    report.recurrence_rules = Some(details.recurrence_rules);
     Ok(report)
+}
+
+fn parse_occurrence_start(value: &str) -> Result<DateTime<Local>> {
+    let value = DateTime::parse_from_rfc3339(value)
+        .context("occurrence start must be RFC3339 with an explicit UTC offset")?;
+    let seconds = value
+        .timestamp_nanos_opt()
+        .map(|value| value / 1_000_000_000)
+        .unwrap_or_else(|| value.timestamp_millis() / 1_000);
+    Utc.timestamp_opt(seconds, 0)
+        .single()
+        .map(|value| value.with_timezone(&Local))
+        .context("occurrence start is outside the supported date range")
+}
+
+fn find_event_occurrence(
+    events: &EventsManager,
+    id: &str,
+    occurrence_start: DateTime<Local>,
+) -> Result<EventItem> {
+    let matches = events
+        .fetch_events(
+            occurrence_start - chrono::Duration::seconds(1),
+            occurrence_start + chrono::Duration::seconds(1),
+            None,
+        )
+        .with_context(|| format!("failed to query occurrence for event {id}"))?
+        .into_iter()
+        .filter(|event| {
+            event.identifier == id && event.start_date.timestamp() == occurrence_start.timestamp()
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [event] => Ok(event.clone()),
+        [] => bail!(
+            "no occurrence of event {id} starts at {}; refresh the event list or verify --occurrence-start",
+            occurrence_start.to_rfc3339()
+        ),
+        _ => bail!(
+            "multiple occurrences of event {id} start at {}; refusing to choose",
+            occurrence_start.to_rfc3339()
+        ),
+    }
 }
 
 fn confirm_delete(event: &EventItem) -> Result<()> {
@@ -1527,6 +1586,18 @@ mod tests {
         assert!(patched_field_present(Some("old"), None));
         assert!(patched_field_present(None, Some(Some("new"))));
         assert!(!patched_field_present(Some("old"), Some(None)));
+    }
+
+    #[test]
+    fn occurrence_start_requires_an_explicit_rfc3339_offset() {
+        assert!(parse_occurrence_start("2026-07-20T09:00:00+03:00").is_ok());
+        assert!(parse_occurrence_start("2026-07-20T09:00:00").is_err());
+        assert_eq!(
+            parse_occurrence_start("1969-12-31T23:59:59.750+00:00")
+                .unwrap()
+                .timestamp(),
+            0
+        );
     }
 
     fn calendar(id: &str, title: &str) -> CalendarInfo {

@@ -22,6 +22,12 @@ struct CachedEvent {
     calendar: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventReference {
+    pub id: String,
+    pub occurrence_start: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct ReminderCache {
     version: u8,
@@ -62,6 +68,38 @@ pub fn resolve_event_ref(reference: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("no cached event at row {row}; run a list command first"))?;
 
     Ok(event.id.clone())
+}
+
+pub fn resolve_event_show_ref(
+    reference: &str,
+    occurrence_start: Option<String>,
+) -> Result<EventReference> {
+    let Ok(row) = reference.parse::<usize>() else {
+        return Ok(EventReference {
+            id: reference.to_string(),
+            occurrence_start,
+        });
+    };
+    if occurrence_start.is_some() {
+        bail!("--occurrence-start cannot be combined with a cached row number");
+    }
+    if row == 0 {
+        bail!("row numbers start at 1");
+    }
+    let cache = read_cache()?;
+    let event = cache
+        .events
+        .iter()
+        .find(|event| event.row == row)
+        .ok_or_else(|| anyhow!("no cached event at row {row}; run a list command first"))?;
+    Ok(cached_event_reference(event))
+}
+
+fn cached_event_reference(event: &CachedEvent) -> EventReference {
+    EventReference {
+        id: event.id.clone(),
+        occurrence_start: Some(event.start.clone()),
+    }
 }
 
 pub fn resolve_reminder_ref(reference: &str) -> Result<String> {
@@ -211,6 +249,36 @@ mod tests {
     fn non_numeric_reference_is_left_as_id() {
         assert_eq!(resolve_event_ref("ABC-123").unwrap(), "ABC-123");
         assert_eq!(resolve_reminder_ref("REM-123").unwrap(), "REM-123");
+    }
+
+    #[test]
+    fn explicit_show_reference_preserves_occurrence_start() {
+        assert_eq!(
+            resolve_event_show_ref("ABC-123", Some("2026-07-11T09:00:00+03:00".to_string()))
+                .unwrap(),
+            EventReference {
+                id: "ABC-123".to_string(),
+                occurrence_start: Some("2026-07-11T09:00:00+03:00".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn cached_show_reference_keeps_the_selected_occurrence_start() {
+        let reference = cached_event_reference(&CachedEvent {
+            row: 3,
+            id: "SERIES-ID".to_string(),
+            title: "Weekly sync".to_string(),
+            start: "2026-07-20T09:00:00+03:00".to_string(),
+            end: "2026-07-20T09:30:00+03:00".to_string(),
+            calendar: Some("Work".to_string()),
+        });
+
+        assert_eq!(reference.id, "SERIES-ID");
+        assert_eq!(
+            reference.occurrence_start.as_deref(),
+            Some("2026-07-20T09:00:00+03:00")
+        );
     }
 
     #[test]

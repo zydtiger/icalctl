@@ -127,6 +127,7 @@ icalctl upcoming --days 7
 icalctl list --from 2026-07-07 --to 2026-07-07
 icalctl search meeting --from 2026-07-07 --to 2026-07-14
 icalctl show <event-id-or-row>
+icalctl show <recurring-event-id> --occurrence-start 2026-07-20T09:00:00+03:00
 icalctl add "Meeting" --start 2026-07-07T09:00 --end 2026-07-07T09:30
 icalctl batch add --file events.json --if-exists skip --dry-run
 icalctl update <event-id-or-row> --location "Library"
@@ -149,6 +150,14 @@ icalctl update --help
 icalctl delete --help
 icalctl reminders --help
 ```
+
+`icalctl show` loads event recurrence rules and their end conditions. It also
+reports `is_detached` and the original `occurrence_date` for recurrence
+exceptions. Recurring-event creation and occurrence/series mutation scope are
+not implemented yet; this recurrence surface is read-only.
+A fresh cached row preserves the selected occurrence start. An EventKit series
+identifier alone may resolve to its first occurrence, so pair a durable series
+id with `--occurrence-start <RFC3339>` when inspecting a specific occurrence.
 
 ## Date Input
 
@@ -243,6 +252,12 @@ when alarms were not loaded. A successful `add --json` also reports
 Event read-back JSON always includes UTC/local timestamps and duration. When
 EventKit reports an item timezone, it also includes
 `start_in_event_time_zone` and `end_in_event_time_zone`.
+Event list/search responses leave `recurrence_count` and `recurrence_rules`
+null; `show` and live write readbacks load them. Event recurrence rules report
+frequency, interval, termination, first weekday, ordinal weekday objects as
+`{weekday, week_number}`, month days, months, year weeks/days, and set
+positions. `is_detached` and `occurrence_date` identify an edited recurrence
+exception and its original series instant.
 
 Reminder commands use dedicated top-level types: `reminder_status`,
 `reminder_lists`, `default_reminder_list`, `reminders`, and `reminder`.
@@ -250,8 +265,9 @@ Reminder commands use dedicated top-level types: `reminder_status`,
 `kind: "datetime"`. Date-only values keep their calendar date without a fake
 midnight instant. Timed values include the original local components,
 EventKit timezone when present, normalized offset-bearing value, and UTC value.
-List/search responses deliberately leave alarm and recurrence counts null;
-`show` loads the public alarm and recurrence details.
+Reminder list/search responses deliberately leave alarm and recurrence counts
+and rule collections null; `reminders show` loads the public alarm and
+recurrence details.
 Reminder creation previews use `reminder_dry_run` with `would_write: false`,
 the exact resolved list and source ids, list-selection provenance, date inputs,
 priority, field presence, planned notifications, duplicate policy, and planned

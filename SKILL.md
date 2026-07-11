@@ -30,7 +30,7 @@ cargo install --path .
 - Prefer `--dry-run --json` to validate and preview event or reminder writes before asking for final confirmation.
 - For timezone-less event inputs, `--time-zone <TZID>` controls parsing and stores the same single EventKit timezone. For offset-bearing or travel times, explicit offsets remain authoritative; verify input echoes, UTC fields, and `duration_seconds`.
 - Quote titles, calendar names, notes, locations, and URLs that contain spaces or shell metacharacters.
-- Use row numbers only immediately after a fresh `today`, `upcoming`, `list`, or `search`; otherwise use the exact EventKit id or rerun the list command.
+- Use row numbers only immediately after a fresh `today`, `upcoming`, `list`, or `search`; otherwise use the exact EventKit id or rerun the list command. A recurring series id does not distinguish its occurrences: use a fresh row or pair the id with `show --occurrence-start <RFC3339>` for a specific occurrence.
 - Use reminder row numbers only immediately after a fresh `reminders list` or `reminders search`. Event and reminder rows use different cache files and cannot be interchanged.
 - Do not substitute a fake calendar event when the user asks for a reminder.
 
@@ -454,6 +454,15 @@ use KVC for Reminders.app-only metadata, or edit the Calendar database. Flags,
 tags, sections, subtasks, attachments, templates, and messaging triggers are
 outside the public boundary.
 
+Event `show` loads public recurrence rules in addition to alarms. Inspect
+`recurrence_count`, every entry in `recurrence_rules`, `is_detached`, and
+`occurrence_date` before reasoning about a recurring event or exception. Event
+weekday entries preserve both EventKit's weekday number and ordinal
+`week_number`; do not collapse an ordinal rule such as first Monday into every
+Monday. Event
+recurrence writes and occurrence/series scope are not supported yet; do not
+infer or simulate them with ordinary add/update/delete commands.
+
 ### `today`
 
 List today's events.
@@ -511,11 +520,19 @@ Show one event by exact EventKit identifier or cached row number.
 
 ```sh
 icalctl show <event-id>
+icalctl show <recurring-event-id> --occurrence-start 2026-07-20T09:00:00+03:00
 icalctl show 1
 icalctl show 1 --json
 ```
 
-Use exact ids for durable references. Use row numbers only after a fresh list-like command in the same workflow.
+Use exact ids for durable series references. Use row numbers only after a fresh
+list-like command in the same workflow. For a specific recurring occurrence,
+use that fresh row or combine the series id with its exact RFC3339
+`--occurrence-start`; EventKit can otherwise return the first occurrence.
+For recurring events, inspect the rule collection, `is_detached`, and the
+original `occurrence_date`. Read support does not authorize recurrence writes;
+the current update/delete commands have no safe occurrence-versus-series CLI
+scope.
 
 ### `add`
 

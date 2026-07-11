@@ -232,6 +232,10 @@ pub enum Command {
     Show {
         /// EventKit event identifier, or row number from the last event list.
         id: String,
+
+        /// Exact occurrence start for a recurring EventKit identifier.
+        #[arg(long, value_name = "RFC3339")]
+        occurrence_start: Option<String>,
     },
 
     /// Search event title, notes, location, URL, and calendar name in a bounded range.
@@ -1728,6 +1732,25 @@ mod tests {
                     }
                 }
             } if file.to_str() == Some("reminders.json")
+        ));
+    }
+
+    #[test]
+    fn event_show_accepts_an_exact_occurrence_start() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "show",
+            "SERIES-ID",
+            "--occurrence-start",
+            "2026-07-20T09:00:00+03:00",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Show {
+                id,
+                occurrence_start: Some(start),
+            } if id == "SERIES-ID" && start == "2026-07-20T09:00:00+03:00"
         ));
     }
 }

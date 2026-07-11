@@ -1,6 +1,6 @@
 use crate::models::{
-    AlarmReport, BatchReport, CalendarReport, EventDraftReport, EventReport, JsonOutput,
-    ReminderAlarmReport, ReminderBatchReport, ReminderDateKind, ReminderDateReport,
+    AlarmReport, BatchReport, CalendarReport, EventDraftReport, EventRecurrenceReport, EventReport,
+    JsonOutput, ReminderAlarmReport, ReminderBatchReport, ReminderDateKind, ReminderDateReport,
     ReminderDraftReport, ReminderListReport, ReminderMutationDraftReport,
     ReminderRecurrenceEndReport, ReminderRecurrenceReport, ReminderReport,
 };
@@ -638,9 +638,100 @@ fn print_event_detail(event: &EventReport) {
     if let Some(alarm_count) = event.alarm_count {
         println!("alarm count: {alarm_count}");
     }
+    if let Some(recurrence_count) = event.recurrence_count {
+        println!("recurrence count: {recurrence_count}");
+    }
+    if let Some(rules) = &event.recurrence_rules
+        && !rules.is_empty()
+    {
+        println!("recurrence rules:");
+        for rule in rules {
+            println!("- {}", event_recurrence_label(rule));
+        }
+    }
+    println!(
+        "recurrence exception: {}",
+        if event.is_detached {
+            "detached"
+        } else {
+            "none"
+        }
+    );
+    if let Some(occurrence_date) = &event.occurrence_date {
+        println!("original occurrence: {occurrence_date}");
+    }
     if let Some(notes) = &event.notes {
         println!();
         println!("{notes}");
+    }
+}
+
+fn event_recurrence_label(rule: &EventRecurrenceReport) -> String {
+    let mut parts = vec![format!("every {} {}", rule.interval, rule.frequency)];
+    if rule.first_day_of_week != 0 {
+        parts.push(format!(
+            "week starts {}",
+            event_weekday_name(rule.first_day_of_week)
+        ));
+    }
+    if let Some(days) = &rule.days_of_week {
+        parts.push(format!(
+            "weekdays {}",
+            days.iter()
+                .map(|day| {
+                    let weekday = event_weekday_name(day.weekday);
+                    if day.week_number == 0 {
+                        weekday.to_string()
+                    } else {
+                        format!("{weekday}(week={})", day.week_number)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+    append_number_rule_part(&mut parts, "month days", rule.days_of_month.as_deref());
+    append_number_rule_part(&mut parts, "months", rule.months_of_year.as_deref());
+    append_number_rule_part(&mut parts, "year weeks", rule.weeks_of_year.as_deref());
+    append_number_rule_part(&mut parts, "year days", rule.days_of_year.as_deref());
+    append_number_rule_part(&mut parts, "set positions", rule.set_positions.as_deref());
+    parts.push(
+        match (
+            &rule.end.kind[..],
+            rule.end.occurrence_count,
+            &rule.end.end_date,
+        ) {
+            ("count", Some(count), _) => format!("ends after {count} occurrences"),
+            ("date", _, Some(date)) => format!("ends {date}"),
+            _ => "never ends".to_string(),
+        },
+    );
+    parts.join("; ")
+}
+
+fn append_number_rule_part(parts: &mut Vec<String>, label: &str, values: Option<&[i32]>) {
+    if let Some(values) = values {
+        parts.push(format!(
+            "{label} {}",
+            values
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+}
+
+fn event_weekday_name(value: isize) -> &'static str {
+    match value {
+        1 => "sun",
+        2 => "mon",
+        3 => "tue",
+        4 => "wed",
+        5 => "thu",
+        6 => "fri",
+        7 => "sat",
+        _ => "unknown",
     }
 }
 
@@ -760,5 +851,39 @@ mod tests {
             end_date: None,
         };
         assert_eq!(reminder_recurrence_label(&rule), "every 2 monthly (never)");
+    }
+
+    #[test]
+    fn event_recurrence_label_includes_components_and_termination() {
+        let rule = EventRecurrenceReport {
+            frequency: "monthly".to_string(),
+            interval: 2,
+            first_day_of_week: 2,
+            end: crate::models::EventRecurrenceEndReport {
+                kind: "count".to_string(),
+                occurrence_count: Some(6),
+                end_date: None,
+            },
+            days_of_week: Some(vec![
+                crate::models::EventRecurrenceWeekdayReport {
+                    weekday: 2,
+                    week_number: 1,
+                },
+                crate::models::EventRecurrenceWeekdayReport {
+                    weekday: 4,
+                    week_number: -1,
+                },
+            ]),
+            days_of_month: Some(vec![1, -1]),
+            months_of_year: None,
+            weeks_of_year: None,
+            days_of_year: None,
+            set_positions: Some(vec![1]),
+        };
+
+        assert_eq!(
+            event_recurrence_label(&rule),
+            "every 2 monthly; week starts mon; weekdays mon(week=1),wed(week=-1); month days 1,-1; set positions 1; ends after 6 occurrences"
+        );
     }
 }
