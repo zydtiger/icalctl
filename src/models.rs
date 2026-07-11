@@ -28,6 +28,10 @@ pub enum JsonOutput {
     Reminder {
         reminder: Box<ReminderReport>,
     },
+    ReminderDryRun {
+        would_write: bool,
+        draft: Box<ReminderDraftReport>,
+    },
     Events {
         events: Vec<EventReport>,
     },
@@ -177,8 +181,12 @@ pub struct ReminderReport {
     pub list_source_id: Option<String>,
     pub list_type: Option<String>,
     pub allows_list_modifications: Option<bool>,
+    pub list_selection: Option<ReminderListSelection>,
+    pub write_action: Option<String>,
     pub due: Option<ReminderDateReport>,
+    pub due_input: Option<String>,
     pub start: Option<ReminderDateReport>,
+    pub start_input: Option<String>,
     pub notes: Option<String>,
     pub location: Option<String>,
     pub url: Option<String>,
@@ -192,6 +200,40 @@ pub struct ReminderReport {
     pub last_modified_date: Option<String>,
     pub external_identifier: Option<String>,
     pub item_time_zone: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ReminderDraftReport {
+    pub operation: String,
+    pub matched_reminder_id: Option<String>,
+    pub title: String,
+    pub list: String,
+    pub list_id: String,
+    pub list_source: Option<String>,
+    pub list_source_id: Option<String>,
+    pub list_selection: ReminderListSelection,
+    pub due: Option<ReminderDateReport>,
+    pub due_input: Option<String>,
+    pub start: Option<ReminderDateReport>,
+    pub start_input: Option<String>,
+    pub priority: ReminderPriority,
+    pub priority_value: usize,
+    pub has_notes: bool,
+    pub has_location: bool,
+    pub has_url: bool,
+    pub notification_count: usize,
+    pub notifications: Vec<ReminderNotificationReport>,
+    pub if_exists: String,
+    pub duplicate_window_seconds: i64,
+    pub duplicate_warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ReminderNotificationReport {
+    pub kind: String,
+    pub minutes_before: i64,
+    pub absolute_utc: String,
+    pub absolute_in_due_time_zone: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -213,6 +255,13 @@ pub struct CalendarReport {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CalendarSelection {
+    Explicit,
+    EventkitDefault,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderListSelection {
     Explicit,
     EventkitDefault,
 }

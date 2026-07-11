@@ -19,18 +19,20 @@ cargo install --path .
 
 - Prefer `icalctl <command> --json` whenever output must be parsed by an agent or script.
 - Use human-friendly output when answering a person directly and JSON when making decisions from command output.
-- Treat `add`, live `batch add`, `update`, and `delete` as live writes to the user's Calendar.app data.
+- Treat event `add`, live `batch add`, `update`, `delete`, and `reminders add` without `--dry-run` as live user-data writes.
 - Do not create, update, move, or delete an event until the user has explicitly confirmed the final action.
 - For every request to add an event, analyze the best-fit calendar from the user's available calendars and confirm that calendar choice before writing.
 - Prefer exact `--calendar-id` selectors for agent writes and reads. Title-only selectors are acceptable only when the title is unique.
-- Prefer exact `--list-id` selectors for reminder reads. A title-only reminder-list selector is acceptable only when the title is unique; otherwise qualify it by source.
+- Do not create a reminder until the user has explicitly confirmed the exact target reminder-list title and id plus the final reminder details. This is required for dated reminders just as calendar selection is required for events.
+- Prefer exact `--list-id` selectors for reminder writes and reads. A title-only reminder-list selector is acceptable only when the title is unique; otherwise qualify it by source.
+- Use `icalctl reminders default-list --json` before any workflow that intentionally relies on EventKit's implicit default reminder list.
 - Use `icalctl default-calendar --json` before any workflow that intentionally relies on EventKit's implicit default target.
-- Prefer `--dry-run --json` to validate and preview add, batch add, and update plans before asking for final write confirmation.
+- Prefer `--dry-run --json` to validate and preview event or reminder writes before asking for final confirmation.
 - For timezone-less event inputs, `--time-zone <TZID>` controls parsing and stores the same single EventKit timezone. For offset-bearing or travel times, explicit offsets remain authoritative; verify input echoes, UTC fields, and `duration_seconds`.
 - Quote titles, calendar names, notes, locations, and URLs that contain spaces or shell metacharacters.
 - Use row numbers only immediately after a fresh `today`, `upcoming`, `list`, or `search`; otherwise use the exact EventKit id or rerun the list command.
 - Use reminder row numbers only immediately after a fresh `reminders list` or `reminders search`. Event and reminder rows use different cache files and cannot be interchanged.
-- Reminder support is read-only in the current phase. Do not substitute a fake calendar event when the user asks for a reminder; explain that reminder writes are not enabled yet.
+- Do not substitute a fake calendar event when the user asks for a reminder.
 
 If `icalctl` is not installed in `PATH`, run it from the project with:
 
@@ -149,6 +151,50 @@ icalctl add "Project sync" \
 ```
 
 6. Report the created event id, title, time, calendar id, and calendar source.
+
+## Required Workflow for Adding Reminders
+
+When the user asks to add a reminder:
+
+1. Inspect actual writable reminder lists:
+
+```sh
+icalctl reminders lists --writable-only --json
+```
+
+2. Choose the best existing list from its title, id, source, and writability.
+Prefer an exact `--list-id`. If the workflow intentionally uses EventKit's
+default, inspect it first with `icalctl reminders default-list --json`.
+Duplicate list titles must be qualified or selected by exact id.
+
+3. Preview the complete reminder without writing:
+
+```sh
+icalctl reminders add "Submit report" \
+  --list-id LIST_ID \
+  --due 2026-07-15 \
+  --priority high \
+  --dry-run --json
+```
+
+4. Inspect the resolved list and source ids, list-selection provenance, title,
+due/start kind and normalized times, priority, notes/location/URL presence,
+planned notification count and absolute times, duplicate match, and planned
+operation.
+
+5. Ask the user to confirm the exact reminder-list title and id before the live
+write. For every dated reminder, also confirm whether the due value is
+date-only or timed, its displayed time and timezone/offset assumption, start
+value if any, priority, notes, location, URL, and notifications. Priority never
+implies a notification.
+
+6. Only after confirmation, repeat the command without `--dry-run`, preferably
+with the exact `--list-id`, then report the reminder id, title, due value, list
+title/id/source, priority, and write action.
+
+A dry run never replaces user confirmation. Use `--if-exists skip` for
+retry-safe creation only after previewing the match. Use `update` only when the
+user has confirmed the supplied non-identity patches.
 
 ## Date And Time Input
 
@@ -287,7 +333,37 @@ and report local components, timezone, normalized offset-bearing time, and UTC.
 
 `reminders show` loads public alarm and recurrence details. Reminder priority
 is reported separately as `none`, `high`, `medium`, or `low`; priority does not
-imply an alarm. Current reminder commands do not mutate Reminders data.
+imply an alarm.
+
+Create reminders with:
+
+```sh
+icalctl reminders add "Submit report" --list-id LIST_ID \
+  --due 2026-07-15 --priority high --dry-run --json
+```
+
+Omit `--due` for an undated reminder. Date-only due/start values remain true
+date components. For timed values, precedence is explicit RFC3339 offset,
+otherwise `--time-zone`, otherwise the Mac local timezone. `--time-zone` does
+not change date-only values. Optional fields are `--start`, `--notes` or
+`--notes-file`, `--url`, `--location`, and
+`--priority none|low|medium|high`.
+Provider-backed lists may normalize or drop free-text location, so inspect the
+live JSON readback.
+
+For timed due values, `--notify-at-due` requests a notification at the due
+instant and repeatable `--notify-minutes-before N` requests positive-minute
+early notifications. No notification is added by default. Notification flags
+are invalid for undated or date-only reminders. Dry-run JSON reports the
+computed absolute UTC and due-timezone instants. When notification flags are
+supplied with `--if-exists update`, they replace existing alarms; omission
+preserves them.
+
+Duplicate identity is list id + title + due kind/value. `--if-exists` defaults
+to `error`; `skip` returns the existing reminder and `update` changes only
+supplied non-identity fields. `--duplicate-window-seconds` applies only to
+timed due matching. Date-only and undated identities stay exact. No alarms are
+added unless a notification flag is supplied.
 
 Only use the public EventKit reminder surface. Do not inspect private selectors,
 use KVC for Reminders.app-only metadata, or edit the Calendar database. Flags,
@@ -558,8 +634,8 @@ Reminder rows are stored separately at:
 ```
 
 or `$XDG_CACHE_HOME/icalctl/last-reminders.json`. Only `reminders list` and
-`reminders search` refresh it, and only `reminders show` consumes it in this
-read-only phase.
+`reminders search` refresh it. `reminders show` consumes reminder rows; add
+does not accept a row target.
 
 ## Safe Examples
 

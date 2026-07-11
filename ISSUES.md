@@ -217,18 +217,19 @@ Acceptance checks:
 
 ## 13. Add first-class Apple Reminders support
 
-**Status: In progress.** Phase 1 is complete; Issue 13 remains open until all
-five phases are complete.
+**Status: In progress.** Phases 1 and 2 are complete; Issue 13 remains open
+until all five phases are complete.
 
 Implementation phases:
 
 - [x] Phase 1: read-only authorization, list discovery/default, list/search/show,
   due/state filters, public alarm/recurrence detail, diagnostics, and a separate
   reminder row cache.
-- [ ] Phase 2: safe basic creation with exact-list targeting, dry-run, duplicate
-  handling, date-only/timed due values, priority, and agent confirmation rules.
+- [x] Phase 2: safe basic creation with exact-list targeting, dry-run, duplicate
+  handling, date-only/timed due values, priority, timed-due notifications, and
+  agent confirmation rules.
 - [ ] Phase 3: update, completion/uncompletion, list moves, and delete.
-- [ ] Phase 4: alarms, recurrence, geofences, and Location diagnostics.
+- [ ] Phase 4: absolute/custom alarms, recurrence, geofences, and Location diagnostics.
 - [ ] Phase 5: structured JSON input, batch creation, guarded integration tests,
   documentation hardening, and final Issue 13 resolution.
 
@@ -236,9 +237,9 @@ Problem: `icalctl` only manages calendar events even though EventKit also expose
 the user's Reminders lists and reminder items. Agents need to create a reminder
 that is due on a date, or due at a specific date and time, without turning the
 task into a fake calendar event. The current CLI also cannot express an
-important reminder or attach reminder alarms.
+high-priority reminder or attach reminder alarms.
 
-Important reminders and alarms are separate EventKit concepts. Importance maps
+Priority and alarms are separate EventKit concepts. Priority maps
 to reminder priority (`none`, `low`, `medium`, or `high`); alarms control when a
 notification or location trigger fires. A reminder must be able to use either
 feature independently or both together.
@@ -262,7 +263,8 @@ Proposed changes:
 - Support EventKit reminder fields: title, notes, URL, location, start date,
   due date, priority, completion state/date, multiple alarms, and the single
   recurrence rule EventKit allows. Expose priority as
-  `none|low|medium|high`, with `--important` as a convenience alias for `high`.
+  `none|low|medium|high` through `--priority`; do not add a second importance
+  flag.
 - Support time alarms at the due instant, relative early alarms, and absolute
   alarm datetimes. Support arrival/departure geofence alarms when coordinates,
   radius, and proximity are supplied, including the separate Location permission
@@ -289,8 +291,8 @@ icalctl reminders add "Call the dentist" \
   --list-id LIST_ID \
   --due 2026-07-15T14:30 \
   --time-zone Europe/Helsinki \
-  --alarm-at-due \
-  --alarm-minutes-before 30 \
+  --notify-at-due \
+  --notify-minutes-before 30 \
   --json
 ```
 
@@ -299,10 +301,11 @@ Acceptance checks:
 - Creating with `--due 2026-07-15` reads back as a date-only/all-day reminder;
   creating with `--due 2026-07-15T14:30 --time-zone Europe/Helsinki` reads back
   with the same local due time and normalized instant.
-- `--important` and `--priority high` both create a high-priority reminder, and
-  neither adds an alarm unless an alarm option is also supplied.
-- `--alarm-at-due` produces an EventKit display alarm at the timed due value;
-  multiple early or absolute alarms round-trip in `show --json`.
+- `--priority high` creates a high-priority reminder without adding an alarm
+  unless a notification option is also supplied.
+- `--notify-at-due` produces an EventKit display alarm at the timed due value;
+  repeatable `--notify-minutes-before` values produce deterministic absolute
+  alarms that round-trip in `show --json`.
 - Complete/uncomplete preserves an explicit completion timestamp correctly, and
   update can clear due/start dates, priority, recurrence, location, URL, notes,
   and alarms without changing omitted fields.
@@ -314,3 +317,34 @@ Acceptance checks:
   alarm validation, recurrence serialization, selector ambiguity, and cache
   separation. An ignored guarded integration test creates, reads, completes,
   uncompletes, and deletes a reminder only in an exact `icalctl Test` list.
+
+## 14. Add recurring calendar-event support later
+
+Problem: `icalctl` does not yet expose recurrence rules for calendar events or
+let users safely create and edit recurring series. EventKit recurrence also
+requires explicit occurrence-versus-series behavior for updates and deletes.
+
+Proposed changes:
+
+- Show recurrence rules and exception status in human and JSON event details.
+- Add recurring event creation for daily, weekly, monthly, and yearly rules,
+  including interval, selected weekdays or month days, and optional end date or
+  occurrence count.
+- Add update and delete scope controls for one occurrence versus future
+  occurrences. Never infer a series-wide mutation from a cached row number.
+- Preserve all-day behavior, timezone metadata, and local wall-clock time across
+  daylight-saving transitions. Validate unsupported provider combinations before
+  writing and include the resolved recurrence rule in dry-run output.
+- Keep recurrence on the existing event add/update/delete paths so calendar
+  selection, duplicate checks, confirmation, JSON reporting, and batch safety
+  remain consistent.
+
+Acceptance checks:
+
+- Daily, weekday-only weekly, monthly, and yearly rules round-trip through
+  EventKit and `show --json` without losing their interval or end condition.
+- Dry-run reports the normalized rule and performs no write.
+- Updating or deleting one occurrence leaves the rest of the series intact;
+  future-occurrence scope changes only the selected occurrence and later ones.
+- Timed recurrences keep the intended local clock time across DST changes, and
+  all-day recurrences remain date-only.

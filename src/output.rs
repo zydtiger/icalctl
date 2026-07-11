@@ -1,6 +1,7 @@
 use crate::models::{
     AlarmReport, BatchReport, CalendarReport, EventDraftReport, EventReport, JsonOutput,
-    ReminderAlarmReport, ReminderDateKind, ReminderDateReport, ReminderListReport, ReminderReport,
+    ReminderAlarmReport, ReminderDateKind, ReminderDateReport, ReminderDraftReport,
+    ReminderListReport, ReminderReport,
 };
 use chrono::DateTime;
 
@@ -59,6 +60,7 @@ pub fn print_human_output(output: &JsonOutput) {
         }
         JsonOutput::Reminders { reminders } => print_reminders(reminders),
         JsonOutput::Reminder { reminder } => print_reminder_detail(reminder),
+        JsonOutput::ReminderDryRun { draft, .. } => print_reminder_dry_run(draft),
         JsonOutput::Events { events } => print_events(events),
         JsonOutput::Event { event } => print_event_detail(event),
         JsonOutput::DryRun { draft, .. } => print_dry_run(draft),
@@ -66,6 +68,74 @@ pub fn print_human_output(output: &JsonOutput) {
         JsonOutput::Deleted { deleted } => {
             println!("Deleted event: {} [{}]", deleted.title, deleted.id);
         }
+    }
+}
+
+fn print_reminder_dry_run(draft: &ReminderDraftReport) {
+    println!("Dry run: no Reminders changes were made");
+    println!("operation: {}", draft.operation);
+    if let Some(id) = &draft.matched_reminder_id {
+        println!("matched reminder id: {id}");
+    }
+    println!("title: {}", draft.title);
+    println!("list: {} [{}]", draft.list, draft.list_id);
+    if let Some(source) = &draft.list_source {
+        if let Some(source_id) = &draft.list_source_id {
+            println!("list source: {source} [{source_id}]");
+        } else {
+            println!("list source: {source}");
+        }
+    }
+    println!(
+        "list selection: {}",
+        match draft.list_selection {
+            crate::models::ReminderListSelection::Explicit => "explicit",
+            crate::models::ReminderListSelection::EventkitDefault => "EventKit default",
+        }
+    );
+    println!(
+        "due: {}",
+        draft
+            .due
+            .as_ref()
+            .map(reminder_date_label)
+            .unwrap_or_else(|| "undated".to_string())
+    );
+    if let Some(input) = &draft.due_input {
+        println!("due input: {input}");
+    }
+    if let Some(start) = &draft.start {
+        println!("start: {}", reminder_date_label(start));
+    }
+    if let Some(input) = &draft.start_input {
+        println!("start input: {input}");
+    }
+    println!(
+        "priority: {} ({})",
+        reminder_priority_label(&draft.priority),
+        draft.priority_value
+    );
+    println!("notifications: {}", draft.notification_count);
+    for notification in &draft.notifications {
+        if notification.minutes_before == 0 {
+            println!("- at due: {}", notification.absolute_in_due_time_zone);
+        } else {
+            println!(
+                "- {} minutes before: {}",
+                notification.minutes_before, notification.absolute_in_due_time_zone
+            );
+        }
+    }
+    println!(
+        "fields: notes={} location={} url={}",
+        draft.has_notes, draft.has_location, draft.has_url
+    );
+    println!(
+        "duplicate policy: {} window={} seconds",
+        draft.if_exists, draft.duplicate_window_seconds
+    );
+    for warning in &draft.duplicate_warnings {
+        println!("warning: {warning}");
     }
 }
 
@@ -157,13 +227,31 @@ fn print_reminder_detail(reminder: &ReminderReport) {
             println!("list source: {source}");
         }
     }
+    if let Some(selection) = reminder.list_selection {
+        println!(
+            "list selection: {}",
+            match selection {
+                crate::models::ReminderListSelection::Explicit => "explicit",
+                crate::models::ReminderListSelection::EventkitDefault => "EventKit default",
+            }
+        );
+    }
+    if let Some(action) = &reminder.write_action {
+        println!("write action: {action}");
+    }
     if let Some(due) = &reminder.due {
         println!("due: {}", reminder_date_label(due));
     } else {
         println!("due: undated");
     }
+    if let Some(input) = &reminder.due_input {
+        println!("due input: {input}");
+    }
     if let Some(start) = &reminder.start {
         println!("start: {}", reminder_date_label(start));
+    }
+    if let Some(input) = &reminder.start_input {
+        println!("start input: {input}");
     }
     if let Some(location) = &reminder.location {
         println!("location: {location}");

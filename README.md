@@ -18,8 +18,8 @@ This is an early Apple Silicon macOS CLI. It currently supports:
 - validating and importing idempotent JSON event batches
 - compact JSON output
 - cached row-number references for the most recent event list
-- read-only Reminders authorization, list discovery, list/search/show, and a
-  separate reminder row cache
+- Reminders authorization, list discovery, list/search/show, safe dry-run
+  creation, and a separate reminder row cache
 - shell completion generation
 
 It does not yet implement ICS import/export, recurrence editing UX, invite/RSVP
@@ -137,6 +137,7 @@ icalctl reminders default-list
 icalctl reminders list
 icalctl reminders search report
 icalctl reminders show <reminder-id-or-row>
+icalctl reminders add "Submit report" --list-id LIST_ID --due 2026-07-15 --dry-run
 ```
 
 Use command-specific help for the full option set:
@@ -251,6 +252,10 @@ midnight instant. Timed values include the original local components,
 EventKit timezone when present, normalized offset-bearing value, and UTC value.
 List/search responses deliberately leave alarm and recurrence counts null;
 `show` loads the public alarm and recurrence details.
+Reminder creation previews use `reminder_dry_run` with `would_write: false`,
+the exact resolved list and source ids, list-selection provenance, date inputs,
+priority, field presence, planned notifications, duplicate policy, and planned
+operation.
 
 The current JSON contract is schema generation 1. Consumers should dispatch on
 the top-level `type`, treat documented fields as stable, and tolerate additive
@@ -457,7 +462,7 @@ travel schema. This is the canonical recipe:
 }
 ```
 
-## Reading Apple Reminders
+## Apple Reminders
 
 Reminders access is separate from Calendar access. Check it and inspect the
 available reminder lists with:
@@ -503,11 +508,67 @@ icalctl reminders show REMINDER_ID --json
 icalctl reminders show 1 --json
 ```
 
-This phase is intentionally read-only. Reminder creation and mutation commands
-are not enabled yet. The adapter uses only Apple's public EventKit API. Features
-that Reminders.app does not expose publicly through EventKit—flags, tags,
-sections, subtasks, attachments, templates, and messaging triggers—are not
-read through private selectors or by editing the Calendar database.
+Create an undated, date-only, or timed reminder only after inspecting the
+available writable lists and previewing the exact target:
+
+```sh
+icalctl reminders lists --writable-only --json
+icalctl reminders add "Submit report" \
+  --list-id LIST_ID \
+  --due 2026-07-15 \
+  --priority high \
+  --dry-run --json
+```
+
+Omitting `--due` creates an undated reminder. `YYYY-MM-DD` remains a true
+date-only value. For timezone-less timed values, `--time-zone` selects the IANA
+zone; without it, the Mac local zone is used. An explicit RFC3339 offset always
+wins, including when `--time-zone` is also present. The dry run echoes the
+input, local components, normalized offset-bearing value, UTC value, and
+EventKit component timezone.
+
+The add command also accepts `--start`, `--notes` or `--notes-file`, `--url`,
+`--location`, and `--priority none|low|medium|high`. Priority is independent
+from notifications and never creates one by itself.
+Free-text location uses the public EventKit field; provider-backed lists may
+normalize or drop it, so the live JSON response is the authoritative readback.
+
+For a timed due value, add deterministic notifications at or before the due
+instant:
+
+```sh
+icalctl reminders add "Call the dentist" \
+  --list-id LIST_ID \
+  --due 2026-07-15T14:30 \
+  --time-zone Europe/Helsinki \
+  --notify-at-due \
+  --notify-minutes-before 30 \
+  --dry-run --json
+```
+
+`--notify-minutes-before` is repeatable and requires a positive number.
+Notification flags require a timed due value; date-only and undated reminders
+do not have a deterministic notification instant. No notifications are added
+by default. The CLI computes absolute EventKit alarm times and reports both UTC
+and due-timezone values in dry-run JSON.
+
+Duplicate identity is exact list id, title, and due kind/value. The default
+policy is `--if-exists error`; `skip` returns the existing reminder and
+`update` patches only supplied non-identity fields. Timed due matching is exact
+unless `--duplicate-window-seconds` is explicitly nonzero; date-only and
+undated identities always remain exact. When notification flags are supplied
+with `--if-exists update`, they replace existing alarms; omission preserves
+existing alarms.
+
+If all list selectors are omitted, EventKit's default reminder list is used.
+Inspect `reminders default-list --json` first and still confirm its exact title
+and id. A dry run does not replace user confirmation. Only after confirmation,
+repeat the same command without `--dry-run`.
+
+The adapter uses only Apple's public EventKit API. Features that Reminders.app
+does not expose publicly through EventKit—flags, tags, sections, subtasks,
+attachments, templates, and messaging triggers—are not read through private
+selectors or by editing the Calendar database.
 
 ## Row Cache
 

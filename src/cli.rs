@@ -87,6 +87,28 @@ pub struct ReadReminderListSelectorArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct WriteReminderListSelectorArgs {
+    /// Reminder list title. Add defaults to EventKit's default reminder list.
+    #[arg(short = 'l', long = "list")]
+    pub list: Option<String>,
+
+    /// Exact EventKit reminder list id.
+    #[arg(
+        long = "list-id",
+        conflicts_with_all = ["list", "list_source", "source_id"]
+    )]
+    pub list_id: Option<String>,
+
+    /// Source title that qualifies --list.
+    #[arg(long = "list-source", requires = "list", conflicts_with = "source_id")]
+    pub list_source: Option<String>,
+
+    /// Exact EventKit source id that qualifies --list.
+    #[arg(long, requires = "list")]
+    pub source_id: Option<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct ReminderReadFilterArgs {
     #[command(flatten)]
     pub list_selector: ReadReminderListSelectorArgs,
@@ -396,6 +418,67 @@ pub enum RemindersCommand {
         /// EventKit reminder identifier, or row number from the last reminder list.
         id: String,
     },
+
+    /// Create a reminder after resolving and validating its exact target list.
+    Add {
+        /// Reminder title.
+        title: String,
+
+        #[command(flatten)]
+        list_selector: WriteReminderListSelectorArgs,
+
+        /// Due date or datetime. Omit for an undated reminder.
+        #[arg(long, value_name = "VALUE")]
+        due: Option<String>,
+
+        /// Start date or datetime.
+        #[arg(long, value_name = "VALUE")]
+        start: Option<String>,
+
+        /// IANA zone for timezone-less timed due/start values.
+        #[arg(long = "time-zone", value_name = "TZID")]
+        time_zone: Option<String>,
+
+        /// Reminder notes.
+        #[arg(long, conflicts_with = "notes_file")]
+        notes: Option<String>,
+
+        /// Read exact reminder notes from a UTF-8 file, or stdin with -.
+        #[arg(long, value_name = "PATH")]
+        notes_file: Option<PathBuf>,
+
+        /// Reminder URL.
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Free-text reminder location.
+        #[arg(long)]
+        location: Option<String>,
+
+        /// Reminder priority. Priority does not create a notification.
+        #[arg(long, value_enum)]
+        priority: Option<ReminderPriorityArg>,
+
+        /// Notify exactly at the timed due instant.
+        #[arg(long)]
+        notify_at_due: bool,
+
+        /// Notify N minutes before the timed due instant. Repeatable.
+        #[arg(long = "notify-minutes-before", value_name = "MINUTES")]
+        notify_minutes_before: Vec<i64>,
+
+        /// Behavior when a matching reminder already exists.
+        #[arg(long = "if-exists", value_enum, default_value_t = IfExistsArg::Error)]
+        if_exists: IfExistsArg,
+
+        /// Timed-due tolerance in seconds for duplicate matching.
+        #[arg(long, default_value_t = 0)]
+        duplicate_window_seconds: i64,
+
+        /// Validate and print the resolved reminder without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -504,6 +587,15 @@ pub enum ReminderStateArg {
     Incomplete,
     Completed,
     All,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderPriorityArg {
+    None,
+    Low,
+    Medium,
+    High,
 }
 
 pub fn print_completions(shell: Shell) {
@@ -996,5 +1088,136 @@ mod tests {
             Cli::try_parse_from(["icalctl", "reminders", "list", "--list-source", "iCloud"]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn reminder_add_forwards_safe_creation_options() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "reminders",
+            "add",
+            "Submit report",
+            "--list-id",
+            "LIST-1",
+            "--due",
+            "2026-07-15T14:30",
+            "--start",
+            "2026-07-15",
+            "--time-zone",
+            "Europe/Helsinki",
+            "--notes",
+            "Final version",
+            "--url",
+            "https://example.com/report",
+            "--location",
+            "Office",
+            "--priority",
+            "high",
+            "--notify-at-due",
+            "--notify-minutes-before",
+            "30",
+            "--if-exists",
+            "skip",
+            "--duplicate-window-seconds",
+            "30",
+            "--dry-run",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Reminders {
+                command: RemindersCommand::Add {
+                    title,
+                    list_selector: WriteReminderListSelectorArgs {
+                        list_id: Some(list_id),
+                        ..
+                    },
+                    due: Some(due),
+                    start: Some(start),
+                    time_zone: Some(time_zone),
+                    notes: Some(notes),
+                    url: Some(url),
+                    location: Some(location),
+                    priority: Some(ReminderPriorityArg::High),
+                    notify_at_due: true,
+                    notify_minutes_before,
+                    if_exists: IfExistsArg::Skip,
+                    duplicate_window_seconds: 30,
+                    dry_run: true,
+                    ..
+                }
+            } if title == "Submit report"
+                && list_id == "LIST-1"
+                && due == "2026-07-15T14:30"
+                && start == "2026-07-15"
+                && time_zone == "Europe/Helsinki"
+                && notes == "Final version"
+                && url == "https://example.com/report"
+                && location == "Office"
+                && notify_minutes_before == [30]
+        ));
+    }
+
+    #[test]
+    fn reminder_add_allows_undated_default_list_with_priority_enum() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "reminders",
+            "add",
+            "Call dentist",
+            "--priority",
+            "high",
+            "--notes-file",
+            "notes.txt",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Reminders {
+                command: RemindersCommand::Add {
+                    list_selector: WriteReminderListSelectorArgs {
+                        list: None,
+                        list_id: None,
+                        ..
+                    },
+                    due: None,
+                    priority: Some(ReminderPriorityArg::High),
+                    notes_file: Some(path),
+                    ..
+                }
+            } if path.to_str() == Some("notes.txt")
+        ));
+    }
+
+    #[test]
+    fn reminder_add_rejects_conflicting_list_and_notes_inputs() {
+        assert!(
+            Cli::try_parse_from([
+                "icalctl",
+                "reminders",
+                "add",
+                "Task",
+                "--list",
+                "Tasks",
+                "--list-id",
+                "A",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "icalctl",
+                "reminders",
+                "add",
+                "Task",
+                "--notes",
+                "inline",
+                "--notes-file",
+                "notes.txt",
+            ])
+            .is_err()
+        );
     }
 }
