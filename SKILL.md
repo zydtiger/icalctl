@@ -30,7 +30,7 @@ cargo install --path .
 - Prefer `--dry-run --json` to validate and preview event or reminder writes before asking for final confirmation.
 - For timezone-less event inputs, `--time-zone <TZID>` controls parsing and stores the same single EventKit timezone. For offset-bearing or travel times, explicit offsets remain authoritative; verify input echoes, UTC fields, and `duration_seconds`.
 - Quote titles, calendar names, notes, locations, and URLs that contain spaces or shell metacharacters.
-- Use row numbers only immediately after a fresh `today`, `upcoming`, `list`, or `search`; otherwise use the exact EventKit id or rerun the list command. A recurring series id does not distinguish its occurrences: use a fresh row or pair the id with `show --occurrence-start <RFC3339>` for a specific occurrence.
+- Use row numbers only immediately after a fresh `today`, `upcoming`, `list`, or `search`; otherwise use the exact EventKit id or rerun the list command. A recurring series id does not distinguish its occurrences: use a fresh row or pair the id with `--occurrence-start <RFC3339>` for a specific occurrence. Before recurring update/delete, separately confirm `--scope occurrence|future`; a row never chooses scope.
 - Use reminder row numbers only immediately after a fresh `reminders list` or `reminders search`. Event and reminder rows use different cache files and cannot be interchanged.
 - Do not substitute a fake calendar event when the user asks for a reminder.
 
@@ -464,8 +464,9 @@ recurrence creation is supported only through the normal `add` pipeline.
 Structured JSON and batch rows accept the same normalized recurrence fields.
 For a batch default, explicit row `recurrence: null` opts out. `--if-exists
 skip` is safe only when the existing normalized rule is identical; a mismatch
-must fail. Recurring update and delete scope are not supported yet; do not infer
-or simulate them with ordinary update/delete commands.
+must fail. For recurring update or delete, resolve one exact occurrence and
+require the user to choose `--scope occurrence` or `--scope future`. Never infer
+future scope from a series id or cached row.
 
 ### `today`
 
@@ -534,9 +535,7 @@ list-like command in the same workflow. For a specific recurring occurrence,
 use that fresh row or combine the series id with its exact RFC3339
 `--occurrence-start`; EventKit can otherwise return the first occurrence.
 For recurring events, inspect the rule collection, `is_detached`, and the
-original `occurrence_date`. Read support does not authorize recurrence writes;
-the current update/delete commands have no safe occurrence-versus-series CLI
-scope.
+original `occurrence_date`.
 
 ### `add`
 
@@ -579,7 +578,7 @@ Options:
 - `--dry-run`: validate and print the resolved event draft without writing.
 - `--json`: print the created event as JSON.
 
-The event JSON has `calendar_selection: "explicit"` when a calendar selector was passed and `calendar_selection: "eventkit_default"` when EventKit's default was used. It reports `write_action` as `created`, `skipped`, or `updated`. Prefer `--if-exists skip` for retry-safe writes; preview it first because a duplicate-window tolerance can match a nearby event. For recurrence, skip requires an identical normalized rule, while recurring update remains blocked until explicit mutation scope is available.
+The event JSON has `calendar_selection: "explicit"` when a calendar selector was passed and `calendar_selection: "eventkit_default"` when EventKit's default was used. It reports `write_action` as `created`, `skipped`, or `updated`. Prefer `--if-exists skip` for retry-safe writes; preview it first because a duplicate-window tolerance can match a nearby event. For recurrence, skip requires an identical normalized rule. Recurring `--if-exists update` remains blocked because add/reconcile has no exact occurrence target; use the explicit `update` command instead.
 
 JSON draft files require `title`, `start`, and `end` and support `calendar`,
 `calendar_id`, `calendar_source`, `source_id`, `notes`, `location`, `url`,
@@ -614,7 +613,8 @@ is the default. Use `skip` for idempotent reruns. Use `update` only when the
 user has confirmed the optional-field patches; supplied alarm arrays replace
 existing alarms. By default any preflight error blocks all writes.
 For recurring matches, `skip` requires the identical normalized rule and
-`update` is rejected until explicit occurrence/series scope is available.
+batch `update` is rejected because a batch match has no exact occurrence and
+scope.
 `--continue-on-error` permits partial imports and must be disclosed before
 confirmation because EventKit cannot roll back earlier successful writes.
 
@@ -654,12 +654,16 @@ icalctl update 1 --calendar-id A46E7273-2813-48A6-8F74-67B9E9E3D55D
 icalctl update 1 --start 2026-07-07T10:00 --end 2026-07-07T10:30
 icalctl update 1 --clear-location --clear-notes --clear-url
 icalctl update 1 --add-alarm-minutes-before 30
+icalctl update <recurring-event-id> --occurrence-start 2026-07-20T09:00:00+03:00 --scope occurrence --location "Library" --dry-run --json
+icalctl update <recurring-event-id> --occurrence-start 2026-07-20T09:00:00+03:00 --scope future --location "Library" --dry-run --json
 icalctl update 1 --json
 ```
 
 Options:
 
 - `<ID>`: exact EventKit event identifier, or row number from the last event list.
+- `--occurrence-start <RFC3339>`: exact selected start when using a recurring series id.
+- `--scope <SCOPE>`: required for recurring targets; `occurrence` changes only the selected occurrence, while `future` changes it and later occurrences.
 - `--title <TITLE>`: replace the title.
 - `--start <START>`: replace the start date or datetime.
 - `--end <END>`: replace the end date or datetime.
@@ -682,7 +686,12 @@ Options:
 - `--dry-run`: validate and print the resulting event draft without writing.
 - `--json`: print the updated event as JSON.
 
-Before updating, confirm the exact event and the intended changes. If moving to a different calendar, inspect calendars and confirm the destination calendar.
+Before updating, confirm the exact event and the intended changes. For a
+recurring target, confirm both the exact occurrence and whether the user means
+only that occurrence or that occurrence and all future ones; never choose scope
+for the user. A fresh cached row supplies the occurrence start but does not
+supply scope. If moving to a different calendar, inspect calendars and confirm
+the destination calendar.
 
 ### `delete`
 
@@ -693,9 +702,11 @@ icalctl delete <event-id>
 icalctl delete 1
 icalctl delete 1 --force
 icalctl delete 1 --force --json
+icalctl delete <recurring-event-id> --occurrence-start 2026-07-20T09:00:00+03:00 --scope occurrence
+icalctl delete <recurring-event-id> --occurrence-start 2026-07-20T09:00:00+03:00 --scope future
 ```
 
-By default, the command prompts for the word `delete`. `--force` skips the interactive prompt and is intended for scripts. Even when using `--force`, an agent must get explicit user confirmation before deleting.
+By default, the command prompts for the word `delete`. `--force` skips the interactive prompt and is intended for scripts. Even when using `--force`, an agent must get explicit user confirmation before deleting. Recurring deletion also requires an exact occurrence and explicit `--scope occurrence|future`; confirm both with the user. A cached row identifies an occurrence but never authorizes future deletion.
 
 ### `completions`
 

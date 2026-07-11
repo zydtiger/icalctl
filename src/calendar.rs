@@ -1,11 +1,11 @@
-use crate::cache::{resolve_event_ref, resolve_event_show_ref};
+use crate::cache::resolve_event_show_ref;
 use crate::calendar_selector::{
     CalendarSelector, require_single_writable_calendar, resolve_calendars,
 };
 use crate::cli::{
     AvailabilityArg, BatchCommand, Command, EventJsonRecurrence, EventRecurrenceArgs,
-    EventRepeatArg, EventWeekdayArg, IfExistsArg, ReadCalendarSelectorArgs, TravelCommand,
-    WriteCalendarSelectorArgs,
+    EventRepeatArg, EventScopeArg, EventWeekdayArg, IfExistsArg, ReadCalendarSelectorArgs,
+    TravelCommand, WriteCalendarSelectorArgs,
 };
 use crate::dates::{
     datetime_in_time_zone, parse_end_datetime, parse_end_datetime_in_time_zone,
@@ -13,8 +13,9 @@ use crate::dates::{
     validate_time_zone,
 };
 use crate::eventkit_bridge::{
-    canonical_eventkit_recurrence_end_utc, create_event_in_calendar, read_event_details,
-    update_event_calendar_metadata, validate_event_time_zone, validate_event_url,
+    canonical_eventkit_recurrence_end_utc, create_event_in_calendar, delete_event_scoped,
+    read_event_details, update_event_calendar_metadata, update_event_scoped,
+    validate_event_time_zone, validate_event_url,
 };
 use crate::models::{
     CalendarReport, CalendarSelection, DeletedReport, EventDraftReport, EventRecurrenceEndReport,
@@ -25,7 +26,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use eventkit::{
     AlarmInfo, AlarmProximity, AuthorizationStatus, CalendarInfo, EventAvailability, EventDraft,
-    EventItem, EventKitError, EventPatch, EventsManager,
+    EventItem, EventKitError, EventPatch, EventSpan, EventsManager,
 };
 use serde::Deserialize;
 use std::fs;
@@ -165,6 +166,8 @@ pub fn run(command: Command) -> Result<JsonOutput> {
         }
         Command::Update {
             id,
+            occurrence_start,
+            scope,
             title,
             start,
             end,
@@ -185,6 +188,8 @@ pub fn run(command: Command) -> Result<JsonOutput> {
         } => {
             let result = update_event(UpdateEventInput {
                 id,
+                occurrence_start,
+                scope,
                 title,
                 start,
                 end,
@@ -265,8 +270,13 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             }
         },
         Command::Reminders { command } => crate::reminders::run(command),
-        Command::Delete { id, force } => {
-            let deleted = delete_event(&id, force)?;
+        Command::Delete {
+            id,
+            occurrence_start,
+            scope,
+            force,
+        } => {
+            let deleted = delete_event(&id, occurrence_start, scope, force)?;
             Ok(JsonOutput::Deleted { deleted })
         }
         Command::Completions { .. } => unreachable!("completions are handled before calendar run"),
@@ -337,6 +347,8 @@ struct JsonAddDraft {
 
 struct UpdateEventInput {
     id: String,
+    occurrence_start: Option<String>,
+    scope: Option<EventScopeArg>,
     title: Option<String>,
     start: Option<String>,
     end: Option<String>,
@@ -704,6 +716,7 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
             .transpose()?;
         return Ok(WriteEventResult::DryRun(Box::new(EventDraftReport {
             operation: operation.to_string(),
+            scope: None,
             event_id: duplicates.first().map(|event| event.identifier.clone()),
             title: input.title,
             start: start.to_rfc3339(),
@@ -922,11 +935,28 @@ fn update_existing_from_add(
 }
 
 fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
-    let id = resolve_event_ref(&input.id)?;
+    let reference = resolve_event_show_ref(&input.id, input.occurrence_start.clone())?;
+    let id = reference.id;
+    let occurrence_start = reference
+        .occurrence_start
+        .as_deref()
+        .map(parse_occurrence_start)
+        .transpose()
+        .with_context(|| format!("invalid occurrence start for event {id}"))?;
     let events = authorized_events_manager()?;
-    let current = events
-        .get_event(&id)
-        .with_context(|| format!("failed to load event {id}"))?;
+    let current = match occurrence_start {
+        Some(start) => find_event_occurrence(&events, &id, start)?,
+        None => events
+            .get_event(&id)
+            .with_context(|| format!("failed to load event {id}"))?,
+    };
+    let details = read_event_details(&id, occurrence_start)
+        .with_context(|| format!("failed to read recurrence for event {id}"))?;
+    let recurring = current.occurrence_date.is_some()
+        || current.is_detached
+        || !details.recurrence_rules.is_empty();
+    let (span, scope) =
+        resolve_event_mutation_scope(recurring, occurrence_start.is_some(), input.scope)?;
 
     ensure_event_calendar_writable(&events, &current, "update")?;
     let target = if write_selector_is_empty(&input.calendar_selector) {
@@ -1008,10 +1038,7 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
             Some(value) => value,
             None => current.timezone.as_deref(),
         };
-        let existing_alarm_count = events
-            .get_event_alarms(&id)
-            .with_context(|| format!("failed to read alarms for event {id}"))?
-            .len();
+        let existing_alarm_count = details.alarms.len();
         let duplicates = matching_events(
             &events,
             &DuplicateQuery {
@@ -1034,6 +1061,7 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
 
         return Ok(WriteEventResult::DryRun(Box::new(EventDraftReport {
             operation: "update".to_string(),
+            scope: scope.map(str::to_string),
             event_id: Some(id),
             title: effective_title.to_string(),
             start: effective_start.to_rfc3339(),
@@ -1057,7 +1085,7 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
             time_zone: effective_time_zone.map(str::to_string),
             availability: availability_name(effective_availability).to_string(),
             alarm_count: existing_alarm_count + input.add_alarm_minutes_before.len(),
-            recurrence: None,
+            recurrence: details.recurrence_rules.first().cloned(),
             has_notes: patched_field_present(current.notes.as_deref(), notes),
             has_location: patched_field_present(current.location.as_deref(), location),
             has_url: patched_field_present(current.URL.as_deref(), url),
@@ -1074,64 +1102,113 @@ fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> {
         || all_day.is_some()
         || availability.is_some();
 
-    if has_event_patch {
-        let patch = EventPatch {
-            title: input.title.as_deref(),
-            notes,
-            location,
-            start,
-            end,
-            all_day,
-            calendar_title: None,
-            URL: url,
-            availability,
-            ..Default::default()
-        };
-
-        events
-            .update_event(&id, &patch)
-            .with_context(|| format!("failed to update event {id}"))?;
-    }
-
-    let id = if target.is_some() || time_zone.is_some() {
-        update_event_calendar_metadata(
-            &id,
-            target.as_ref().map(|target| target.identifier.as_str()),
-            time_zone,
-        )
-        .with_context(|| format!("failed to update calendar metadata for event {id}"))?
-    } else {
-        id
+    let patch = EventPatch {
+        title: input.title.as_deref(),
+        notes,
+        location,
+        start,
+        end,
+        all_day,
+        calendar_title: None,
+        URL: url,
+        availability,
+        span,
+        ..Default::default()
     };
-
-    add_relative_alarms(&events, &id, &input.add_alarm_minutes_before)?;
-    let mut report = event_report_with_alarms(&events, &id, None)?;
+    debug_assert!(
+        has_event_patch
+            || target.is_some()
+            || time_zone.is_some()
+            || !input.add_alarm_minutes_before.is_empty()
+    );
+    let updated = update_event_scoped(
+        &id,
+        occurrence_start,
+        &patch,
+        target.as_ref().map(|target| target.identifier.as_str()),
+        time_zone,
+        &input.add_alarm_minutes_before,
+        span,
+    )
+    .with_context(|| format!("failed to update event {id}"))?;
+    let readback_events = authorized_events_manager()?;
+    let mut report = event_report_with_alarms(
+        &readback_events,
+        &updated.id,
+        recurring.then_some(updated.occurrence_start.as_str()),
+    )?;
     report.write_action = Some("updated".to_string());
+    report.write_scope = scope.map(str::to_string);
     report.start_input = input.start;
     report.end_input = input.end;
     Ok(WriteEventResult::Written(Box::new(report)))
 }
 
-fn delete_event(reference: &str, force: bool) -> Result<DeletedReport> {
-    let id = resolve_event_ref(reference)?;
+fn delete_event(
+    reference: &str,
+    occurrence_start: Option<String>,
+    requested_scope: Option<EventScopeArg>,
+    force: bool,
+) -> Result<DeletedReport> {
+    let reference = resolve_event_show_ref(reference, occurrence_start)?;
+    let id = reference.id;
+    let occurrence_start = reference
+        .occurrence_start
+        .as_deref()
+        .map(parse_occurrence_start)
+        .transpose()
+        .with_context(|| format!("invalid occurrence start for event {id}"))?;
     let events = authorized_events_manager()?;
-    let event = events
-        .get_event(&id)
-        .with_context(|| format!("failed to load event {id}"))?;
+    let event = match occurrence_start {
+        Some(start) => find_event_occurrence(&events, &id, start)?,
+        None => events
+            .get_event(&id)
+            .with_context(|| format!("failed to load event {id}"))?,
+    };
+    let details = read_event_details(&id, occurrence_start)
+        .with_context(|| format!("failed to read recurrence for event {id}"))?;
+    let recurring = event.occurrence_date.is_some()
+        || event.is_detached
+        || !details.recurrence_rules.is_empty();
+    let (span, scope) =
+        resolve_event_mutation_scope(recurring, occurrence_start.is_some(), requested_scope)?;
     ensure_event_calendar_writable(&events, &event, "delete")?;
 
     if !force {
-        confirm_delete(&event)?;
+        confirm_delete(&event, scope)?;
     }
 
-    events
-        .delete_event(&id, false)
+    delete_event_scoped(&id, occurrence_start, span)
         .with_context(|| format!("failed to delete event {id}"))?;
 
     Ok(DeletedReport {
         id,
         title: event.title,
+        scope: scope.map(str::to_string),
     })
+}
+
+fn resolve_event_mutation_scope(
+    recurring: bool,
+    has_occurrence_start: bool,
+    requested: Option<EventScopeArg>,
+) -> Result<(EventSpan, Option<&'static str>)> {
+    if !recurring {
+        if requested.is_some() {
+            bail!("--scope is only valid for recurring events");
+        }
+        return Ok((EventSpan::This, None));
+    }
+    if !has_occurrence_start {
+        bail!(
+            "recurring event mutation requires an exact occurrence; pass --occurrence-start or use a cached row number"
+        );
+    }
+    match requested {
+        Some(EventScopeArg::Occurrence) => Ok((EventSpan::This, Some("occurrence"))),
+        Some(EventScopeArg::Future) => Ok((EventSpan::Future, Some("future"))),
+        None => bail!("recurring event mutation requires --scope occurrence or --scope future"),
+    }
 }
 
 pub(crate) fn authorized_events_manager() -> Result<EventsManager> {
@@ -1503,11 +1580,16 @@ fn find_event_occurrence(
     }
 }
 
-fn confirm_delete(event: &EventItem) -> Result<()> {
+fn confirm_delete(event: &EventItem, scope: Option<&str>) -> Result<()> {
     let mut stderr = io::stderr();
+    let scope = match scope {
+        Some("occurrence") => "only this recurring occurrence",
+        Some("future") => "this recurring occurrence and all future occurrences",
+        _ => "this event",
+    };
     writeln!(
         stderr,
-        "Delete event \"{}\" ({})?",
+        "Delete {scope}: \"{}\" ({})?",
         event.title,
         event_time_range(&EventReport::from(event))
     )?;
@@ -1948,6 +2030,31 @@ mod tests {
             std::slice::from_ref(&requested)
         ));
         assert!(recurrence_rules_match(None, &[]));
+    }
+
+    #[test]
+    fn recurring_mutations_require_occurrence_and_explicit_scope() {
+        assert!(resolve_event_mutation_scope(true, false, Some(EventScopeArg::Future)).is_err());
+        assert!(resolve_event_mutation_scope(true, true, None).is_err());
+        assert_eq!(
+            resolve_event_mutation_scope(true, true, Some(EventScopeArg::Occurrence)).unwrap(),
+            (EventSpan::This, Some("occurrence"))
+        );
+        assert_eq!(
+            resolve_event_mutation_scope(true, true, Some(EventScopeArg::Future)).unwrap(),
+            (EventSpan::Future, Some("future"))
+        );
+    }
+
+    #[test]
+    fn nonrecurring_mutations_reject_series_scope() {
+        assert_eq!(
+            resolve_event_mutation_scope(false, false, None).unwrap(),
+            (EventSpan::This, None)
+        );
+        assert!(
+            resolve_event_mutation_scope(false, true, Some(EventScopeArg::Occurrence)).is_err()
+        );
     }
 
     fn calendar(id: &str, title: &str) -> CalendarInfo {

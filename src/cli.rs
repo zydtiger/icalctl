@@ -382,6 +382,14 @@ pub enum Command {
         /// EventKit event identifier, or row number from the last event list.
         id: String,
 
+        /// Exact occurrence start for a recurring EventKit identifier.
+        #[arg(long, value_name = "RFC3339")]
+        occurrence_start: Option<String>,
+
+        /// Required mutation scope when the selected event is recurring.
+        #[arg(long, value_enum)]
+        scope: Option<EventScopeArg>,
+
         /// New event title.
         #[arg(long)]
         title: Option<String>,
@@ -476,6 +484,14 @@ pub enum Command {
     Delete {
         /// EventKit event identifier, or row number from the last event list.
         id: String,
+
+        /// Exact occurrence start for a recurring EventKit identifier.
+        #[arg(long, value_name = "RFC3339")]
+        occurrence_start: Option<String>,
+
+        /// Required mutation scope when the selected event is recurring.
+        #[arg(long, value_enum)]
+        scope: Option<EventScopeArg>,
 
         /// Delete without an interactive confirmation prompt.
         #[arg(long)]
@@ -892,6 +908,12 @@ pub enum EventWeekdayArg {
     Thursday,
     Friday,
     Saturday,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum EventScopeArg {
+    Occurrence,
+    Future,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
@@ -1828,6 +1850,47 @@ mod tests {
                 id,
                 occurrence_start: Some(start),
             } if id == "SERIES-ID" && start == "2026-07-20T09:00:00+03:00"
+        ));
+    }
+
+    #[test]
+    fn event_update_parses_recurring_occurrence_scope() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "update",
+            "SERIES-ID",
+            "--occurrence-start",
+            "2026-07-20T09:00:00+03:00",
+            "--scope",
+            "future",
+            "--title",
+            "Moved standup",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Update {
+                id,
+                occurrence_start: Some(start),
+                scope: Some(EventScopeArg::Future),
+                ..
+            } if id == "SERIES-ID" && start == "2026-07-20T09:00:00+03:00"
+        ));
+    }
+
+    #[test]
+    fn event_delete_parses_recurring_occurrence_scope() {
+        let cli =
+            Cli::try_parse_from(["icalctl", "delete", "3", "--scope", "occurrence", "--force"])
+                .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Delete {
+                id,
+                occurrence_start: None,
+                scope: Some(EventScopeArg::Occurrence),
+                force: true,
+            } if id == "3"
         ));
     }
 

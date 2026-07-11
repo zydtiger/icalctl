@@ -3,7 +3,7 @@ use crate::models::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local, TimeZone, Utc};
-use eventkit::EventDraft;
+use eventkit::{EventDraft, EventPatch, EventSpan};
 use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2_event_kit::{
@@ -197,6 +197,111 @@ pub fn update_event_calendar_metadata(
     unsafe { event.eventIdentifier() }
         .map(|id| id.to_string())
         .ok_or_else(|| anyhow!("EventKit did not return an id for the moved event"))
+}
+
+pub struct ScopedEventMutation {
+    pub id: String,
+    pub occurrence_start: String,
+}
+
+pub fn update_event_scoped(
+    event_id: &str,
+    occurrence_start: Option<DateTime<Local>>,
+    patch: &EventPatch<'_>,
+    calendar_id: Option<&str>,
+    time_zone: Option<Option<&str>>,
+    alarm_minutes_before: &[i64],
+    span: EventSpan,
+) -> Result<ScopedEventMutation> {
+    let store = unsafe { EKEventStore::new() };
+    unsafe { store.refreshSourcesIfNecessary() };
+    let event = find_event_occurrence(&store, event_id, occurrence_start)?;
+
+    if let Some(title) = patch.title {
+        let title = NSString::from_str(title);
+        unsafe { event.setTitle(Some(&title)) };
+    }
+    if let Some(notes) = patch.notes {
+        let notes = notes.map(NSString::from_str);
+        unsafe { event.setNotes(notes.as_deref()) };
+    }
+    if let Some(location) = patch.location {
+        let location = location.map(NSString::from_str);
+        unsafe { event.setLocation(location.as_deref()) };
+    }
+    if let Some(start) = patch.start {
+        let start = NSDate::dateWithTimeIntervalSince1970(start.timestamp() as f64);
+        unsafe { event.setStartDate(Some(&start)) };
+    }
+    if let Some(end) = patch.end {
+        let end = NSDate::dateWithTimeIntervalSince1970(end.timestamp() as f64);
+        unsafe { event.setEndDate(Some(&end)) };
+    }
+    if let Some(all_day) = patch.all_day {
+        unsafe { event.setAllDay(all_day) };
+    }
+    if let Some(url) = patch.URL {
+        match url {
+            Some(url) => set_url(&event, url)?,
+            None => unsafe { event.setURL(None) },
+        }
+    }
+    if let Some(availability) = patch.availability {
+        unsafe { event.setAvailability(availability.to_ek()) };
+    }
+    if let Some(calendar_id) = calendar_id {
+        let calendar_id = NSString::from_str(calendar_id);
+        let calendar = unsafe { store.calendarWithIdentifier(&calendar_id) }
+            .context("selected calendar is no longer available")?;
+        unsafe { event.setCalendar(Some(&calendar)) };
+    }
+    match time_zone {
+        Some(Some(value)) => set_time_zone(&event, value)?,
+        Some(None) => unsafe { event.setTimeZone(None) },
+        None => {}
+    }
+    set_relative_alarms(&event, alarm_minutes_before)?;
+
+    let span = event_span(span);
+    unsafe {
+        store
+            .saveEvent_span_commit_error(&event, span, true)
+            .map_err(|error| anyhow!("failed to update event: {error:?}"))?;
+        store.refreshSourcesIfNecessary();
+    }
+    let id = unsafe { event.eventIdentifier() }
+        .map(|id| id.to_string())
+        .context("EventKit did not return an id for the updated event")?;
+    let start_date = unsafe { event.startDate() };
+    let occurrence_start = nsdate_dependency_compatible_rfc3339(&start_date);
+    Ok(ScopedEventMutation {
+        id,
+        occurrence_start,
+    })
+}
+
+pub fn delete_event_scoped(
+    event_id: &str,
+    occurrence_start: Option<DateTime<Local>>,
+    span: EventSpan,
+) -> Result<()> {
+    let store = unsafe { EKEventStore::new() };
+    unsafe { store.refreshSourcesIfNecessary() };
+    let event = find_event_occurrence(&store, event_id, occurrence_start)?;
+    unsafe {
+        store
+            .removeEvent_span_commit_error(&event, event_span(span), true)
+            .map_err(|error| anyhow!("failed to delete event: {error:?}"))?;
+        store.refreshSourcesIfNecessary();
+    }
+    Ok(())
+}
+
+fn event_span(span: EventSpan) -> EKSpan {
+    match span {
+        EventSpan::This => EKSpan::ThisEvent,
+        EventSpan::Future => EKSpan::FutureEvents,
+    }
 }
 
 pub struct EventReadDetails {

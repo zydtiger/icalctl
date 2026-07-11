@@ -51,25 +51,6 @@ pub fn update_from_output(output: &JsonOutput) -> Result<()> {
     }
 }
 
-pub fn resolve_event_ref(reference: &str) -> Result<String> {
-    let Ok(row) = reference.parse::<usize>() else {
-        return Ok(reference.to_string());
-    };
-
-    if row == 0 {
-        bail!("row numbers start at 1");
-    }
-
-    let cache = read_cache()?;
-    let event = cache
-        .events
-        .iter()
-        .find(|event| event.row == row)
-        .ok_or_else(|| anyhow!("no cached event at row {row}; run a list command first"))?;
-
-    Ok(event.id.clone())
-}
-
 pub fn resolve_event_show_ref(
     reference: &str,
     occurrence_start: Option<String>,
@@ -246,8 +227,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn non_numeric_reference_is_left_as_id() {
-        assert_eq!(resolve_event_ref("ABC-123").unwrap(), "ABC-123");
+    fn non_numeric_reminder_reference_is_left_as_id() {
         assert_eq!(resolve_reminder_ref("REM-123").unwrap(), "REM-123");
     }
 

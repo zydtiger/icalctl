@@ -81,6 +81,9 @@ pub fn print_human_output(output: &JsonOutput) {
         JsonOutput::Batch { batch } => print_batch(batch),
         JsonOutput::Deleted { deleted } => {
             println!("Deleted event: {} [{}]", deleted.title, deleted.id);
+            if let Some(scope) = &deleted.scope {
+                println!("scope: {scope}");
+            }
         }
     }
 }
@@ -499,6 +502,9 @@ fn print_batch(batch: &BatchReport) {
 fn print_dry_run(draft: &EventDraftReport) {
     println!("Dry run: no Calendar changes were made");
     println!("operation: {}", draft.operation);
+    if let Some(scope) = &draft.scope {
+        println!("scope: {scope}");
+    }
     if let Some(event_id) = &draft.event_id {
         println!("event id: {event_id}");
     }
@@ -623,6 +629,9 @@ fn print_event_detail(event: &EventReport) {
     }
     if let Some(action) = &event.write_action {
         println!("write action: {action}");
+    }
+    if let Some(scope) = &event.write_scope {
+        println!("write scope: {scope}");
     }
     if let Some(location) = &event.location {
         println!("location: {location}");

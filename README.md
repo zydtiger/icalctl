@@ -131,7 +131,9 @@ icalctl show <recurring-event-id> --occurrence-start 2026-07-20T09:00:00+03:00
 icalctl add "Meeting" --start 2026-07-07T09:00 --end 2026-07-07T09:30
 icalctl batch add --file events.json --if-exists skip --dry-run
 icalctl update <event-id-or-row> --location "Library"
+icalctl update <recurring-event-id> --occurrence-start 2026-07-20T09:00:00+03:00 --scope future --location "Library"
 icalctl delete <event-id-or-row>
+icalctl delete <recurring-event-id> --occurrence-start 2026-07-20T09:00:00+03:00 --scope occurrence
 icalctl reminders status
 icalctl reminders lists
 icalctl reminders default-list
@@ -153,11 +155,12 @@ icalctl reminders --help
 
 `icalctl show` loads event recurrence rules and their end conditions. It also
 reports `is_detached` and the original `occurrence_date` for recurrence
-exceptions. Recurring-event creation is supported through `add`; explicit
-occurrence/series mutation scope is not implemented yet.
+exceptions. Recurring-event creation is supported through `add`; update and
+delete require an explicit `--scope occurrence|future` for recurring targets.
 A fresh cached row preserves the selected occurrence start. An EventKit series
 identifier alone may resolve to its first occurrence, so pair a durable series
-id with `--occurrence-start <RFC3339>` when inspecting a specific occurrence.
+id with `--occurrence-start <RFC3339>` when inspecting or mutating a specific
+occurrence. A cached row supplies that discriminator, but never supplies scope.
 
 Create a recurring event through the normal add pipeline:
 
@@ -179,7 +182,8 @@ confirmation safeguards still apply.
 `--if-exists skip` is retry-safe only when the existing event has the exact
 same normalized recurrence rule. A same-time event with a different or absent
 rule is an explicit collision. Recurring `--if-exists update` remains blocked
-until Phase 4 adds mutation scope.
+because the add/reconcile command has no occurrence target; use `update` with
+an exact occurrence and explicit scope instead.
 
 Structured event JSON accepts the same nested rule:
 
@@ -430,7 +434,8 @@ matching event. With `update`, omitted fields remain unchanged, explicit `null`
 clears `notes`, `location`, `url`, or `time_zone`, and a supplied
 `alarm_minutes_before` array replaces all existing alarms.
 For recurring matches, `skip` requires the identical normalized rule and
-`update` is rejected until explicit occurrence/series scope is available.
+batch `update` is rejected because the batch row has no exact occurrence and
+scope; use the standalone `update` command.
 
 By default, any preflight error blocks every write. `--continue-on-error`
 processes valid items and continues after individual write failures. EventKit
@@ -1003,6 +1008,21 @@ icalctl update 1 --time-zone America/New_York
 icalctl update 1 --clear-time-zone
 ```
 
+For a recurring event, select the exact occurrence and choose whether the
+change affects only it or it and every later occurrence:
+
+```sh
+icalctl update SERIES_ID \
+  --occurrence-start 2026-07-20T09:00:00+03:00 \
+  --scope occurrence --location "Library" --dry-run --json
+icalctl update SERIES_ID \
+  --occurrence-start 2026-07-20T09:00:00+03:00 \
+  --scope future --location "Library" --dry-run --json
+```
+
+A fresh cached row can replace the id plus `--occurrence-start`, but
+`--scope` is still mandatory. `--scope` is rejected for non-recurring events.
+
 ## Deleting Events
 
 By default, delete asks for confirmation:
@@ -1015,6 +1035,17 @@ Type `delete` when prompted. Use `--force` for scripts:
 
 ```sh
 icalctl delete 1 --force
+```
+
+Recurring deletion likewise requires an exact occurrence and explicit scope:
+
+```sh
+icalctl delete SERIES_ID \
+  --occurrence-start 2026-07-20T09:00:00+03:00 \
+  --scope occurrence
+icalctl delete SERIES_ID \
+  --occurrence-start 2026-07-20T09:00:00+03:00 \
+  --scope future
 ```
 
 ## Shell Completions

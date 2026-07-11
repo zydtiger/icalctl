@@ -359,6 +359,7 @@ pub struct EventReport {
     pub allows_calendar_modifications: Option<bool>,
     pub calendar_selection: Option<CalendarSelection>,
     pub write_action: Option<String>,
+    pub write_scope: Option<String>,
     pub location: Option<String>,
     pub notes: Option<String>,
     pub url: Option<String>,
@@ -411,6 +412,7 @@ pub struct EventRecurrenceWeekdayReport {
 #[derive(Debug, Serialize)]
 pub struct EventDraftReport {
     pub operation: String,
+    pub scope: Option<String>,
     pub event_id: Option<String>,
     pub title: String,
     pub start: String,
@@ -462,6 +464,7 @@ pub struct AlarmReport {
 pub struct DeletedReport {
     pub id: String,
     pub title: String,
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -557,6 +560,7 @@ impl From<&EventItem> for EventReport {
             allows_calendar_modifications: None,
             calendar_selection: None,
             write_action: None,
+            write_scope: None,
             location: event.location.clone(),
             notes: event.notes.clone(),
             url: event.URL.clone(),
@@ -664,6 +668,7 @@ mod tests {
             would_write: false,
             draft: Box::new(EventDraftReport {
                 operation: "add".to_string(),
+                scope: None,
                 event_id: None,
                 title: "Meeting".to_string(),
                 start: "2026-07-10T09:00:00+08:00".to_string(),

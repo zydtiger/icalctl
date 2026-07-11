@@ -810,6 +810,7 @@ fn draft_report(events: &EventsManager, prepared: &PreparedEvent) -> Result<Even
             None => "batch_error",
         }
         .to_string(),
+        scope: None,
         event_id: current.map(|event| event.identifier.clone()),
         title: prepared.title.clone(),
         start: prepared.start.to_rfc3339(),
