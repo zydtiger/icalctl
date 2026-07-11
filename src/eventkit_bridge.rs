@@ -392,6 +392,14 @@ fn nsdate_rfc3339(date: &NSDate) -> String {
         .unwrap_or_else(|| format!("invalid EventKit date ({timestamp})"))
 }
 
+pub(crate) fn canonical_eventkit_recurrence_end_utc(value: &str) -> Result<String> {
+    let value = DateTime::parse_from_rfc3339(value).context("date must be RFC3339")?;
+    Utc.timestamp_opt(value.timestamp(), 0)
+        .single()
+        .map(|value| value.to_rfc3339())
+        .context("date is outside the supported EventKit range")
+}
+
 fn nsdate_dependency_compatible_rfc3339(date: &NSDate) -> String {
     Local
         .timestamp_opt(date.timeIntervalSince1970() as i64, 0)
@@ -433,6 +441,7 @@ fn set_time_zone(item: &EKCalendarItem, value: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::calendar::recurrence_rules_match;
     use objc2::AnyThread;
     use objc2_event_kit::{
         EKAlarm, EKRecurrenceDayOfWeek, EKRecurrenceEnd, EKRecurrenceRule, EKWeekday,
@@ -561,6 +570,91 @@ mod tests {
         assert_eq!(round_trip.interval, 1);
         assert_eq!(round_trip.end.occurrence_count, Some(4));
         assert_eq!(round_trip.days_of_month, Some(vec![1, -1]));
+    }
+
+    #[test]
+    fn every_supported_frequency_round_trips_to_the_same_semantic_rule() {
+        for (frequency, interval) in [
+            ("daily", 1),
+            ("weekly", 1),
+            ("weekly", 2),
+            ("monthly", 1),
+            ("yearly", 1),
+        ] {
+            let store = unsafe { EKEventStore::new() };
+            let event = unsafe { EKEvent::eventWithEventStore(&store) };
+            let requested = EventRecurrenceReport {
+                frequency: frequency.to_string(),
+                interval,
+                first_day_of_week: if frequency == "weekly" && interval > 1 {
+                    2
+                } else {
+                    0
+                },
+                end: EventRecurrenceEndReport {
+                    kind: "never".to_string(),
+                    occurrence_count: None,
+                    end_date: None,
+                },
+                days_of_week: (frequency == "weekly").then_some(vec![
+                    EventRecurrenceWeekdayReport {
+                        weekday: 2,
+                        week_number: 0,
+                    },
+                ]),
+                days_of_month: None,
+                months_of_year: None,
+                weeks_of_year: None,
+                days_of_year: None,
+                set_positions: None,
+            };
+
+            set_event_recurrence(&event, &requested).unwrap();
+            let rules = unsafe { event.recurrenceRules() }.unwrap();
+            let rule = rules.objectAtIndex(0);
+            let read_back = event_recurrence_report(&rule);
+
+            assert!(
+                recurrence_rules_match(Some(&requested), &[read_back]),
+                "{frequency} interval {interval} did not round-trip semantically"
+            );
+        }
+    }
+
+    #[test]
+    fn fractional_recurrence_end_round_trips_semantically_through_nsdate() {
+        let store = unsafe { EKEventStore::new() };
+        let event = unsafe { EKEvent::eventWithEventStore(&store) };
+        let requested = EventRecurrenceReport {
+            frequency: "daily".to_string(),
+            interval: 1,
+            first_day_of_week: 0,
+            end: EventRecurrenceEndReport {
+                kind: "date".to_string(),
+                occurrence_count: None,
+                end_date: Some("2026-12-31T23:59:59.123456789+03:00".to_string()),
+            },
+            days_of_week: None,
+            days_of_month: None,
+            months_of_year: None,
+            weeks_of_year: None,
+            days_of_year: None,
+            set_positions: None,
+        };
+
+        set_event_recurrence(&event, &requested).unwrap();
+        let rules = unsafe { event.recurrenceRules() }.unwrap();
+        let read_back = event_recurrence_report(&rules.objectAtIndex(0));
+
+        assert!(
+            recurrence_rules_match(Some(&requested), std::slice::from_ref(&read_back)),
+            "requested canonical={} read={} read canonical={}",
+            canonical_eventkit_recurrence_end_utc(requested.end.end_date.as_deref().unwrap())
+                .unwrap(),
+            read_back.end.end_date.as_deref().unwrap(),
+            canonical_eventkit_recurrence_end_utc(read_back.end.end_date.as_deref().unwrap())
+                .unwrap()
+        );
     }
 
     #[test]

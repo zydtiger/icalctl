@@ -1,20 +1,23 @@
 use crate::calendar::{
     authorized_events_manager, availability_name, ensure_availability_supported,
-    ensure_valid_event_range, replace_relative_alarms, resolve_target_calendar,
-    validate_alarm_minutes,
+    ensure_valid_event_range, parse_event_recurrence, recurrence_rules_match,
+    replace_relative_alarms, resolve_target_calendar, validate_alarm_minutes,
 };
-use crate::cli::{AvailabilityArg, IfExistsArg, WriteCalendarSelectorArgs};
+use crate::cli::{
+    AvailabilityArg, EventJsonRecurrence, EventRecurrenceArgs, IfExistsArg,
+    WriteCalendarSelectorArgs,
+};
 use crate::dates::{
     datetime_in_time_zone, parse_end_datetime_in_time_zone, parse_start_datetime_in_time_zone,
     utc_datetime, validate_time_zone,
 };
 use crate::eventkit_bridge::{
-    create_event_in_calendar, update_event_calendar_metadata, validate_event_time_zone,
-    validate_event_url,
+    create_event_in_calendar, read_event_details, update_event_calendar_metadata,
+    validate_event_time_zone, validate_event_url,
 };
 use crate::models::{
     BatchErrorReport, BatchItemReport, BatchReport, BatchSummaryReport, CalendarSelection,
-    EventDraftReport,
+    EventDraftReport, EventRecurrenceReport,
 };
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local};
@@ -47,6 +50,7 @@ struct BatchDefaults {
     availability: Option<AvailabilityArg>,
     all_day: Option<bool>,
     alarm_minutes_before: Option<Vec<i64>>,
+    recurrence: Option<EventJsonRecurrence>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -71,6 +75,8 @@ struct BatchEvent {
     availability: Option<AvailabilityArg>,
     all_day: Option<bool>,
     alarm_minutes_before: Option<Vec<i64>>,
+    #[serde(default)]
+    recurrence: PatchValue<EventJsonRecurrence>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -130,6 +136,7 @@ struct PreparedEvent {
     all_day: bool,
     all_day_patch: Option<bool>,
     alarms: Option<Vec<i64>>,
+    recurrence: Option<EventRecurrenceReport>,
     matched: Option<EventItem>,
     action: Option<PlannedAction>,
     policy_error: Option<String>,
@@ -326,6 +333,14 @@ fn prepare_event(
     ensure_availability_supported(&calendar, availability)?;
     let all_day_patch = event.all_day.or(defaults.all_day);
     let all_day = all_day_patch.unwrap_or(false);
+    let recurrence_input = merged_recurrence(defaults, &event.recurrence);
+    let recurrence = match recurrence_input {
+        PatchValue::Value(value) => {
+            let args = EventRecurrenceArgs::from(value);
+            parse_event_recurrence(&args, &event.start, parse_time_zone)?
+        }
+        PatchValue::Missing | PatchValue::Null => None,
+    };
 
     let matches = matching_events(
         events,
@@ -339,10 +354,25 @@ fn prepare_event(
         0 => (None, Some(PlannedAction::Create), None),
         1 => {
             let matched = matches.into_iter().next();
-            let (action, policy_error) = existing_match_action(
+            let (action, mut policy_error) = existing_match_action(
                 if_exists,
                 &matched.as_ref().expect("match is present").identifier,
             );
+            let existing = matched.as_ref().expect("match is present");
+            let details = read_event_details(&existing.identifier, Some(existing.start_date))?;
+            let recurrence_matches =
+                recurrence_rules_match(recurrence.as_ref(), &details.recurrence_rules);
+            if !recurrence_matches {
+                policy_error = Some(format!(
+                    "matching event [{}] has a different recurrence rule",
+                    existing.identifier
+                ));
+            } else if if_exists == IfExistsArg::Update && !details.recurrence_rules.is_empty() {
+                policy_error = Some(
+                    "recurring batch update requires explicit series scope; use skip for an identical rule"
+                        .to_string(),
+                );
+            }
             (matched, action, policy_error)
         }
         count => {
@@ -380,6 +410,7 @@ fn prepare_event(
         all_day,
         all_day_patch,
         alarms,
+        recurrence,
         matched,
         action,
         policy_error,
@@ -480,6 +511,21 @@ fn merged_time_zone(defaults: &BatchDefaults, event: &PatchValue<String>) -> Pat
     match event {
         PatchValue::Missing => defaults
             .time_zone
+            .clone()
+            .map(PatchValue::Value)
+            .unwrap_or(PatchValue::Missing),
+        PatchValue::Null => PatchValue::Null,
+        PatchValue::Value(value) => PatchValue::Value(value.clone()),
+    }
+}
+
+fn merged_recurrence(
+    defaults: &BatchDefaults,
+    event: &PatchValue<EventJsonRecurrence>,
+) -> PatchValue<EventJsonRecurrence> {
+    match event {
+        PatchValue::Missing => defaults
+            .recurrence
             .clone()
             .map(PatchValue::Value)
             .unwrap_or(PatchValue::Missing),
@@ -642,7 +688,7 @@ fn create_prepared(
         &draft,
         &prepared.calendar.identifier,
         time_zone,
-        None,
+        prepared.recurrence.as_ref(),
         prepared.alarms.as_deref().unwrap_or_default(),
     )
     .context("failed to create event through EventKit")
@@ -790,7 +836,7 @@ fn draft_report(events: &EventsManager, prepared: &PreparedEvent) -> Result<Even
             .unwrap_or("default")
             .to_string(),
         alarm_count,
-        recurrence: None,
+        recurrence: prepared.recurrence.clone(),
         has_notes: patched_presence(
             current.and_then(|event| event.notes.as_deref()),
             &prepared.notes,
@@ -906,6 +952,7 @@ mod tests {
             all_day: false,
             all_day_patch: None,
             alarms: None,
+            recurrence: None,
             matched: None,
             action: Some(PlannedAction::Create),
             policy_error: None,
@@ -947,6 +994,15 @@ mod tests {
 
         assert!(matches!(omitted.notes, PatchValue::Missing));
         assert!(matches!(cleared.notes, PatchValue::Null));
+
+        let cleared_recurrence: BatchEvent = serde_json::from_value(json!({
+            "title": "Meeting",
+            "start": "2026-07-10T09:00",
+            "end": "2026-07-10T10:00",
+            "recurrence": null
+        }))
+        .unwrap();
+        assert!(matches!(cleared_recurrence.recurrence, PatchValue::Null));
     }
 
     #[test]

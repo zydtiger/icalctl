@@ -176,8 +176,26 @@ for monthly rules and accepts positive or negative month days;
 finish with either `--repeat-count` or offset-bearing `--repeat-until`. The
 normal calendar selection, validation, alarms, timezone, dry-run, and
 confirmation safeguards still apply.
-Until Phase 3 recurrence-aware duplicate semantics land, recurring creation
-requires the default `--if-exists error` policy.
+`--if-exists skip` is retry-safe only when the existing event has the exact
+same normalized recurrence rule. A same-time event with a different or absent
+rule is an explicit collision. Recurring `--if-exists update` remains blocked
+until Phase 4 adds mutation scope.
+
+Structured event JSON accepts the same nested rule:
+
+```json
+"recurrence": {
+  "frequency": "weekly",
+  "interval": 2,
+  "weekdays": ["monday", "wednesday"],
+  "count": 8
+}
+```
+
+Batch `defaults` and individual events accept `recurrence` in that shape. A row
+may use `"recurrence": null` to opt out of an inherited default. Batch dry-run,
+preflight blocking, exact-calendar targeting, and partial-write safeguards are
+unchanged.
 
 ## Date Input
 
@@ -411,6 +429,8 @@ choose `skip` for idempotent reruns or `update` to patch optional fields on the
 matching event. With `update`, omitted fields remain unchanged, explicit `null`
 clears `notes`, `location`, `url`, or `time_zone`, and a supplied
 `alarm_minutes_before` array replaces all existing alarms.
+For recurring matches, `skip` requires the identical normalized rule and
+`update` is rejected until explicit occurrence/series scope is available.
 
 By default, any preflight error blocks every write. `--continue-on-error`
 processes valid items and continues after individual write failures. EventKit

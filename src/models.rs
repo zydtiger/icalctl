@@ -402,7 +402,7 @@ pub struct EventRecurrenceReport {
     pub set_positions: Option<Vec<i32>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct EventRecurrenceWeekdayReport {
     pub weekday: isize,
     pub week_number: isize,

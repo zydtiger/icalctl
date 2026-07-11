@@ -3,8 +3,9 @@ use crate::calendar_selector::{
     CalendarSelector, require_single_writable_calendar, resolve_calendars,
 };
 use crate::cli::{
-    AvailabilityArg, BatchCommand, Command, EventRecurrenceArgs, EventRepeatArg, EventWeekdayArg,
-    IfExistsArg, ReadCalendarSelectorArgs, TravelCommand, WriteCalendarSelectorArgs,
+    AvailabilityArg, BatchCommand, Command, EventJsonRecurrence, EventRecurrenceArgs,
+    EventRepeatArg, EventWeekdayArg, IfExistsArg, ReadCalendarSelectorArgs, TravelCommand,
+    WriteCalendarSelectorArgs,
 };
 use crate::dates::{
     datetime_in_time_zone, parse_end_datetime, parse_end_datetime_in_time_zone,
@@ -12,8 +13,8 @@ use crate::dates::{
     validate_time_zone,
 };
 use crate::eventkit_bridge::{
-    create_event_in_calendar, read_event_details, update_event_calendar_metadata,
-    validate_event_time_zone, validate_event_url,
+    canonical_eventkit_recurrence_end_utc, create_event_in_calendar, read_event_details,
+    update_event_calendar_metadata, validate_event_time_zone, validate_event_url,
 };
 use crate::models::{
     CalendarReport, CalendarSelection, DeletedReport, EventDraftReport, EventRecurrenceEndReport,
@@ -331,6 +332,7 @@ struct JsonAddDraft {
     time_zone: Option<String>,
     #[serde(default)]
     alarm_minutes_before: Vec<i64>,
+    recurrence: Option<EventJsonRecurrence>,
 }
 
 struct UpdateEventInput {
@@ -414,6 +416,13 @@ fn resolve_add_command(input: AddCommandInput) -> Result<AddEventInput> {
             bail!("JSON event cannot set both all_day and timed to true");
         }
         validate_json_selector(&draft)?;
+        let recurrence = draft
+            .recurrence
+            .clone()
+            .map(EventRecurrenceArgs::from)
+            .map(|args| parse_event_recurrence(&args, &draft.start, draft.time_zone.as_deref()))
+            .transpose()?
+            .flatten();
         return Ok(AddEventInput {
             title: draft.title,
             start: draft.start,
@@ -431,7 +440,7 @@ fn resolve_add_command(input: AddCommandInput) -> Result<AddEventInput> {
             availability: draft.availability,
             time_zone: draft.time_zone,
             alarm_minutes_before: draft.alarm_minutes_before,
-            recurrence: None,
+            recurrence,
             if_exists,
             duplicate_window_seconds,
             dry_run,
@@ -486,7 +495,7 @@ fn event_recurrence_args_is_empty(args: &EventRecurrenceArgs) -> bool {
         && args.until.is_none()
 }
 
-fn parse_event_recurrence(
+pub(crate) fn parse_event_recurrence(
     args: &EventRecurrenceArgs,
     start_input: &str,
     time_zone: Option<&str>,
@@ -547,13 +556,17 @@ fn parse_event_recurrence(
         let until = DateTime::parse_from_rfc3339(until)
             .context("--repeat-until must be RFC3339 with an explicit UTC offset")?
             .with_timezone(&Local);
-        if until < start {
+        let stored_until = canonical_eventkit_recurrence_end_utc(&until.to_rfc3339())?;
+        let stored_until_local = DateTime::parse_from_rfc3339(&stored_until)
+            .context("canonical EventKit recurrence end must be RFC3339")?
+            .with_timezone(&Local);
+        if stored_until_local < start {
             bail!("--repeat-until must not be before the event start");
         }
         EventRecurrenceEndReport {
             kind: "date".to_string(),
             occurrence_count: None,
-            end_date: Some(until.to_rfc3339()),
+            end_date: Some(stored_until),
         }
     } else {
         EventRecurrenceEndReport {
@@ -626,11 +639,6 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
     if input.duplicate_window_seconds < 0 {
         bail!("--duplicate-window-seconds must be zero or greater");
     }
-    if input.recurrence.is_some() && input.if_exists != IfExistsArg::Error {
-        bail!(
-            "recurring creation currently requires --if-exists error; recurrence-aware skip/update arrives in Issue 14 Phase 3"
-        );
-    }
     if let Some(time_zone) = input.time_zone.as_deref() {
         validate_time_zone(time_zone)?;
         validate_event_time_zone(time_zone)?;
@@ -663,17 +671,26 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
             window_seconds: input.duplicate_window_seconds,
         },
     )?;
+    let recurrence_policy_error = duplicate_recurrence_policy_error(&input, &duplicates)?;
 
     if input.dry_run {
-        let duplicate_warnings = duplicate_warnings(&duplicates, input.duplicate_window_seconds);
-        let operation = match duplicates.len() {
-            0 => "add",
-            1 => match input.if_exists {
-                IfExistsArg::Skip => "skip_existing",
-                IfExistsArg::Update => "update_existing",
-                IfExistsArg::Error => "error_existing",
-            },
-            _ => "error_ambiguous_duplicates",
+        let mut duplicate_warnings =
+            duplicate_warnings(&duplicates, input.duplicate_window_seconds);
+        if let Some(error) = &recurrence_policy_error {
+            duplicate_warnings.push(error.clone());
+        }
+        let operation = if recurrence_policy_error.is_some() {
+            "error_recurrence_policy"
+        } else {
+            match duplicates.len() {
+                0 => "add",
+                1 => match input.if_exists {
+                    IfExistsArg::Skip => "skip_existing",
+                    IfExistsArg::Update => "update_existing",
+                    IfExistsArg::Error => "error_existing",
+                },
+                _ => "error_ambiguous_duplicates",
+            }
         };
         let start_in_event_time_zone = input
             .time_zone
@@ -718,6 +735,10 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
             has_url: input.url.is_some(),
             duplicate_warnings,
         })));
+    }
+
+    if let Some(error) = recurrence_policy_error {
+        bail!(error);
     }
 
     if duplicates.len() > 1 {
@@ -782,6 +803,81 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
     report.start_input = Some(input.start);
     report.end_input = Some(input.end);
     Ok(WriteEventResult::Written(Box::new(report)))
+}
+
+fn duplicate_recurrence_policy_error(
+    input: &AddEventInput,
+    duplicates: &[EventItem],
+) -> Result<Option<String>> {
+    let [existing] = duplicates else {
+        return Ok(None);
+    };
+    let details = read_event_details(&existing.identifier, Some(existing.start_date))?;
+    let recurrence_matches =
+        recurrence_rules_match(input.recurrence.as_ref(), &details.recurrence_rules);
+    if !recurrence_matches {
+        return Ok(Some(format!(
+            "matching event [{}] has a different recurrence rule; refusing to treat it as the same event",
+            existing.identifier
+        )));
+    }
+    if input.if_exists == IfExistsArg::Update && !details.recurrence_rules.is_empty() {
+        return Ok(Some(
+            "--if-exists update for a recurring match requires explicit series scope; use skip for an identical rule or wait for Issue 14 Phase 4"
+                .to_string(),
+        ));
+    }
+    Ok(None)
+}
+
+pub(crate) fn recurrence_rules_match(
+    requested: Option<&EventRecurrenceReport>,
+    existing: &[EventRecurrenceReport],
+) -> bool {
+    match requested {
+        Some(requested) => {
+            existing.len() == 1
+                && existing.first().is_some_and(|existing| {
+                    canonical_recurrence(existing) == canonical_recurrence(requested)
+                })
+        }
+        None => existing.is_empty(),
+    }
+}
+
+fn canonical_recurrence(rule: &EventRecurrenceReport) -> EventRecurrenceReport {
+    let mut rule = rule.clone();
+    rule.first_day_of_week = if rule.frequency == "weekly" && rule.interval > 1 {
+        if rule.first_day_of_week == 0 {
+            2
+        } else {
+            rule.first_day_of_week
+        }
+    } else {
+        0
+    };
+    if let Some(end_date) = rule.end.end_date.as_deref()
+        && let Ok(value) = canonical_eventkit_recurrence_end_utc(end_date)
+    {
+        rule.end.end_date = Some(value);
+    }
+    normalize_optional_vec(&mut rule.days_of_week);
+    normalize_optional_vec(&mut rule.days_of_month);
+    normalize_optional_vec(&mut rule.months_of_year);
+    normalize_optional_vec(&mut rule.weeks_of_year);
+    normalize_optional_vec(&mut rule.days_of_year);
+    normalize_optional_vec(&mut rule.set_positions);
+    rule
+}
+
+fn normalize_optional_vec<T: Ord>(values: &mut Option<Vec<T>>) {
+    if let Some(values) = values {
+        values.sort_unstable();
+        values.dedup();
+    }
+    if values.as_ref().is_some_and(Vec::is_empty) {
+        *values = None;
+    }
 }
 
 fn update_existing_from_add(
@@ -1594,6 +1690,12 @@ mod tests {
                 "availability": "busy",
                 "time_zone": "Asia/Shanghai",
                 "alarm_minutes_before": [10],
+                "recurrence": {
+                    "frequency": "weekly",
+                    "interval": 2,
+                    "weekdays": ["monday", "wednesday"],
+                    "count": 8
+                },
                 "timed": true
             }"#,
         )
@@ -1602,6 +1704,14 @@ mod tests {
         assert_eq!(draft.calendar_id.as_deref(), Some("CAL-1"));
         assert_eq!(draft.notes.as_deref(), Some("Agenda"));
         assert_eq!(draft.alarm_minutes_before, [10]);
+        assert_eq!(
+            draft.recurrence.as_ref().unwrap().frequency,
+            EventRepeatArg::Weekly
+        );
+        assert_eq!(
+            draft.recurrence.as_ref().unwrap().weekdays,
+            [EventWeekdayArg::Monday, EventWeekdayArg::Wednesday]
+        );
         assert!(draft.timed);
         assert!(!draft.all_day);
     }
@@ -1813,46 +1923,31 @@ mod tests {
     }
 
     #[test]
-    fn recurring_creation_rejects_non_error_duplicate_policies_before_eventkit() {
-        let recurrence = parse_event_recurrence(
+    fn recurring_duplicate_identity_requires_the_exact_normalized_rule() {
+        let requested = parse_event_recurrence(
             &EventRecurrenceArgs {
                 repeat: Some(EventRepeatArg::Weekly),
+                weekdays: vec![EventWeekdayArg::Monday],
                 ..Default::default()
             },
-            "2099-07-20T09:00:00+03:00",
+            "2026-07-20T09:00:00+03:00",
             None,
         )
+        .unwrap()
         .unwrap();
-        let input = AddEventInput {
-            title: "Recurring".to_string(),
-            start: "2099-07-20T09:00:00+03:00".to_string(),
-            end: "2099-07-20T09:30:00+03:00".to_string(),
-            calendar_selector: WriteCalendarSelectorArgs {
-                calendar: None,
-                calendar_id: None,
-                calendar_source: None,
-                source_id: None,
-            },
-            notes: None,
-            location: None,
-            url: None,
-            all_day: false,
-            availability: None,
-            time_zone: None,
-            alarm_minutes_before: Vec::new(),
-            recurrence,
-            if_exists: IfExistsArg::Skip,
-            duplicate_window_seconds: 0,
-            dry_run: true,
-        };
+        let mut different = requested.clone();
+        different.interval = 2;
 
-        assert!(
-            add_event(input)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("requires --if-exists error")
-        );
+        assert!(recurrence_rules_match(
+            Some(&requested),
+            std::slice::from_ref(&requested)
+        ));
+        assert!(!recurrence_rules_match(Some(&requested), &[different]));
+        assert!(!recurrence_rules_match(
+            None,
+            std::slice::from_ref(&requested)
+        ));
+        assert!(recurrence_rules_match(None, &[]));
     }
 
     fn calendar(id: &str, title: &str) -> CalendarInfo {

@@ -461,7 +461,10 @@ weekday entries preserve both EventKit's weekday number and ordinal
 `week_number`; do not collapse an ordinal rule such as first Monday into every
 Monday. Event
 recurrence creation is supported only through the normal `add` pipeline.
-Occurrence/series update and delete scope are not supported yet; do not infer
+Structured JSON and batch rows accept the same normalized recurrence fields.
+For a batch default, explicit row `recurrence: null` opts out. `--if-exists
+skip` is safe only when the existing normalized rule is identical; a mismatch
+must fail. Recurring update and delete scope are not supported yet; do not infer
 or simulate them with ordinary update/delete commands.
 
 ### `today`
@@ -576,11 +579,12 @@ Options:
 - `--dry-run`: validate and print the resolved event draft without writing.
 - `--json`: print the created event as JSON.
 
-The event JSON has `calendar_selection: "explicit"` when a calendar selector was passed and `calendar_selection: "eventkit_default"` when EventKit's default was used. It reports `write_action` as `created`, `skipped`, or `updated`. Prefer `--if-exists skip` for retry-safe non-recurring writes; preview it first because a duplicate-window tolerance can match a nearby event. Recurring creation currently requires `--if-exists error` until recurrence-aware duplicate semantics are implemented.
+The event JSON has `calendar_selection: "explicit"` when a calendar selector was passed and `calendar_selection: "eventkit_default"` when EventKit's default was used. It reports `write_action` as `created`, `skipped`, or `updated`. Prefer `--if-exists skip` for retry-safe writes; preview it first because a duplicate-window tolerance can match a nearby event. For recurrence, skip requires an identical normalized rule, while recurring update remains blocked until explicit mutation scope is available.
 
 JSON draft files require `title`, `start`, and `end` and support `calendar`,
 `calendar_id`, `calendar_source`, `source_id`, `notes`, `location`, `url`,
-`availability`, `time_zone`, `alarm_minutes_before`, `all_day`, and `timed`.
+`availability`, `time_zone`, `alarm_minutes_before`, `all_day`, `timed`, and
+nested `recurrence`.
 Keep `--if-exists`, `--duplicate-window-seconds`, `--dry-run`, and `--json` on
 the command. Always dry-run a JSON draft and inspect its resolved calendar and
 times before confirmation.
@@ -609,6 +613,8 @@ planned create or update before running the live command. `--if-exists error`
 is the default. Use `skip` for idempotent reruns. Use `update` only when the
 user has confirmed the optional-field patches; supplied alarm arrays replace
 existing alarms. By default any preflight error blocks all writes.
+For recurring matches, `skip` requires the identical normalized rule and
+`update` is rejected until explicit occurrence/series scope is available.
 `--continue-on-error` permits partial imports and must be disclosed before
 confirmation because EventKit cannot roll back earlier successful writes.
 

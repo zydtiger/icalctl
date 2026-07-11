@@ -203,6 +203,32 @@ pub struct EventRecurrenceArgs {
     pub until: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventJsonRecurrence {
+    pub frequency: EventRepeatArg,
+    pub interval: Option<usize>,
+    #[serde(default)]
+    pub weekdays: Vec<EventWeekdayArg>,
+    #[serde(default)]
+    pub month_days: Vec<i32>,
+    pub count: Option<usize>,
+    pub until: Option<String>,
+}
+
+impl From<EventJsonRecurrence> for EventRecurrenceArgs {
+    fn from(value: EventJsonRecurrence) -> Self {
+        Self {
+            repeat: Some(value.frequency),
+            interval: value.interval,
+            weekdays: value.weekdays,
+            month_days: value.month_days,
+            count: value.count,
+            until: value.until,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Print EventKit Calendar authorization status.
@@ -847,7 +873,8 @@ pub enum ReminderPriorityArg {
     High,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
 pub enum EventRepeatArg {
     Daily,
     Weekly,
@@ -855,7 +882,8 @@ pub enum EventRepeatArg {
     Yearly,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
 pub enum EventWeekdayArg {
     Sunday,
     Monday,
