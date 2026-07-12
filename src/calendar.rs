@@ -862,7 +862,7 @@ fn duplicate_recurrence_policy_error(
     }
     if input.if_exists == IfExistsArg::Update && !details.recurrence_rules.is_empty() {
         return Ok(Some(
-            "--if-exists update for a recurring match requires explicit series scope; use skip for an identical rule or wait for Issue 14 Phase 4"
+            "--if-exists update for a recurring match requires explicit series scope; use skip for an identical rule or use the update command with an explicit occurrence and scope"
                 .to_string(),
         ));
     }
