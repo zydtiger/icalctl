@@ -34,3 +34,14 @@ Use Conventional Commit-style subjects in the form `prefix: concise imperative s
 - `chore:` repository maintenance that fits none of the above
 
 Keep each commit focused. Use a lowercase prefix, omit a trailing period, and add an optional scope only when it makes the subject clearer, for example `feat(calendar): add stable id selection`.
+
+## Releases
+
+Do not bump the version on every commit or without explicit user approval. Use
+Semantic Versioning: patch for compatible fixes, minor for new functionality or
+breaking changes while pre-1.0, and major for breaking changes after 1.0. When a
+coherent, tested, documented set of changes is substantial enough to release,
+suggest the version and rationale to the user and wait for approval before
+changing `Cargo.toml` or creating a release tag. Create a matching Git tag for
+every approved release using `v<version>`, for example `v0.1.0`, and always
+push that tag explicitly to `origin` after creating it.
