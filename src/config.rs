@@ -45,6 +45,7 @@ stale_if_error = true
 # default_list_id = "REMINDER-LIST-ID"
 
 [travel]
+# Inclusive upcoming window used by travel serve (maximum 366 days).
 default_range_days = 90
 calendar_ids = []
 
@@ -55,7 +56,8 @@ open_browser = true
 
 [travel.map]
 projection = "globe"
-# style_url = "https://example.com/map-style.json"
+# Optional public/keyless MapLibre style URL.
+# style_url = "https://demotiles.maplibre.org/style.json"
 "#;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

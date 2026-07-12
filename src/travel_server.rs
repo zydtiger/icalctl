@@ -15,9 +15,20 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 const API_SCHEMA_VERSION: u8 = 1;
 const CAPABILITY_COOKIE: &str = "icalctl_travel_capability";
+const DEFAULT_MAP_STYLE_URL: &str = "https://demotiles.maplibre.org/style.json";
 const HTML_CONTENT_TYPE: &str = "text/html; charset=utf-8";
+const JAVASCRIPT_CONTENT_TYPE: &str = "application/javascript; charset=utf-8";
 const JSON_CONTENT_TYPE: &str = "application/json; charset=utf-8";
-const PLACEHOLDER_HTML: &str = "<!doctype html><meta charset=\"utf-8\"><title>icalctl travel</title><main><h1>icalctl travel</h1><p>The visualization UI is not bundled in this build.</p></main>";
+const CSS_CONTENT_TYPE: &str = "text/css; charset=utf-8";
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self'; child-src 'self'; connect-src 'self' data: blob: https: http:; img-src 'self' data: blob: https: http:; font-src 'self' data: https: http:";
+const INDEX_HTML: &str = include_str!("../assets/web/index.html");
+const APP_CSS: &str = include_str!("../assets/web/app.css");
+const APP_JAVASCRIPT: &str = include_str!("../assets/web/app.js");
+const MAPLIBRE_CSS: &str = include_str!("../assets/web/vendor/maplibre-gl/maplibre-gl.css");
+const MAPLIBRE_JAVASCRIPT: &str =
+    include_str!("../assets/web/vendor/maplibre-gl/maplibre-gl-csp.js");
+const MAPLIBRE_WORKER_JAVASCRIPT: &str =
+    include_str!("../assets/web/vendor/maplibre-gl/maplibre-gl-csp-worker.js");
 
 #[derive(Debug, Serialize)]
 struct TravelApiResponse {
@@ -25,6 +36,7 @@ struct TravelApiResponse {
     generated_at: String,
     range: TravelApiRange,
     calendar_ids: Vec<String>,
+    map: TravelApiMap,
     legs: Vec<TravelLeg>,
     warnings: Vec<TravelWarning>,
 }
@@ -36,10 +48,17 @@ struct TravelApiRange {
     end_inclusive: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct TravelApiMap {
+    projection: String,
+    style_url: String,
+}
+
 #[derive(Debug)]
 struct DateRange {
     start: NaiveDate,
     end: NaiveDate,
+    future_only_start: bool,
 }
 
 #[derive(Debug)]
@@ -184,6 +203,13 @@ fn respond(
     outgoing.add_header(header("Content-Type", response.content_type));
     outgoing.add_header(header("X-Content-Type-Options", "nosniff"));
     outgoing.add_header(header("Referrer-Policy", "no-referrer"));
+    outgoing.add_header(header("Content-Security-Policy", CONTENT_SECURITY_POLICY));
+    outgoing.add_header(header("Cross-Origin-Resource-Policy", "same-origin"));
+    outgoing.add_header(header("X-Frame-Options", "DENY"));
+    outgoing.add_header(header(
+        "Permissions-Policy",
+        "geolocation=(), camera=(), microphone=()",
+    ));
     for (name, value) in response.extra_headers {
         outgoing.add_header(header(&name, &value));
     }
@@ -358,9 +384,20 @@ where
         "/" => HttpResponse {
             status: 200,
             content_type: HTML_CONTENT_TYPE,
-            body: PLACEHOLDER_HTML.to_string(),
+            body: INDEX_HTML.to_string(),
             extra_headers: no_store_headers(),
         },
+        "/assets/app.css" => static_asset(CSS_CONTENT_TYPE, APP_CSS),
+        "/assets/app.js" => static_asset(JAVASCRIPT_CONTENT_TYPE, APP_JAVASCRIPT),
+        "/assets/vendor/maplibre-gl/maplibre-gl.css" => {
+            static_asset(CSS_CONTENT_TYPE, MAPLIBRE_CSS)
+        }
+        "/assets/vendor/maplibre-gl/maplibre-gl-csp.js" => {
+            static_asset(JAVASCRIPT_CONTENT_TYPE, MAPLIBRE_JAVASCRIPT)
+        }
+        "/assets/vendor/maplibre-gl/maplibre-gl-csp-worker.js" => {
+            static_asset(JAVASCRIPT_CONTENT_TYPE, MAPLIBRE_WORKER_JAVASCRIPT)
+        }
         "/api/travel" if method == &Method::Head => {
             match parse_range(url, today, config.travel.default_range_days) {
                 Ok(_) => HttpResponse {
@@ -428,8 +465,14 @@ where
 {
     let start_text = range.start.format("%Y-%m-%d").to_string();
     let end_text = range.end.format("%Y-%m-%d").to_string();
-    let event_start = parse_start_datetime(&start_text).context("invalid range start")?;
+    let mut event_start = parse_start_datetime(&start_text).context("invalid range start")?;
     let event_end = parse_end_datetime(&end_text).context("invalid range end")?;
+    if range.future_only_start {
+        let current = now.with_timezone(&Local);
+        if current > event_start {
+            event_start = current;
+        }
+    }
     let selector = ReadCalendarSelectorArgs {
         calendars: Vec::new(),
         calendar_ids: calendar_ids.to_vec(),
@@ -451,6 +494,15 @@ where
             end_inclusive: true,
         },
         calendar_ids: calendar_ids.to_vec(),
+        map: TravelApiMap {
+            projection: config.travel.map.projection.clone(),
+            style_url: config
+                .travel
+                .map
+                .style_url
+                .clone()
+                .unwrap_or_else(|| DEFAULT_MAP_STYLE_URL.to_string()),
+        },
         legs,
         warnings,
     })
@@ -484,7 +536,11 @@ fn parse_range(url: &str, today: NaiveDate, default_range_days: u32) -> Result<D
             let end = today
                 .checked_add_days(Days::new(u64::from(days)))
                 .ok_or_else(|| anyhow!("default travel date range is out of bounds"))?;
-            Ok(DateRange { start: today, end })
+            Ok(DateRange {
+                start: today,
+                end,
+                future_only_start: true,
+            })
         }
         (Some(start), Some(end)) => {
             let start = parse_query_date(&start, "start")?;
@@ -496,7 +552,11 @@ fn parse_range(url: &str, today: NaiveDate, default_range_days: u32) -> Result<D
             if inclusive_days > i64::from(MAX_TRAVEL_RANGE_DAYS) {
                 bail!("date range must not exceed {MAX_TRAVEL_RANGE_DAYS} inclusive days");
             }
-            Ok(DateRange { start, end })
+            Ok(DateRange {
+                start,
+                end,
+                future_only_start: false,
+            })
         }
         _ => bail!("start and end must be provided together"),
     }
@@ -537,6 +597,18 @@ fn effective_calendar_ids(cli_calendar_ids: Vec<String>, config: &Config) -> Res
     Ok(calendar_ids)
 }
 
+fn static_asset(content_type: &'static str, body: &'static str) -> HttpResponse {
+    HttpResponse {
+        status: 200,
+        content_type,
+        body: body.to_string(),
+        extra_headers: vec![(
+            "Cache-Control".to_string(),
+            "private, max-age=3600".to_string(),
+        )],
+    }
+}
+
 fn error_response(
     status: u16,
     kind: &'static str,
@@ -570,7 +642,7 @@ fn header(name: &str, value: &str) -> Header {
 mod tests {
     use super::*;
     use crate::travel::{FlightInput, format_flight};
-    use chrono::Timelike;
+    use chrono::{TimeZone, Timelike};
     use std::cell::{Cell, RefCell};
 
     fn test_config() -> Config {
@@ -711,6 +783,31 @@ mod tests {
     }
 
     #[test]
+    fn default_range_excludes_events_that_ended_before_now() {
+        let local_now = Local
+            .with_ymd_and_hms(2026, 7, 12, 15, 30, 0)
+            .single()
+            .unwrap();
+        let captured_start = RefCell::new(None);
+        let fetch = |start: DateTime<Local>, _: DateTime<Local>, _: &ReadCalendarSelectorArgs| {
+            captured_start.borrow_mut().replace(start);
+            Ok(Vec::new())
+        };
+        let response = route_request(
+            &Method::Get,
+            "/api/travel",
+            &test_config(),
+            &[],
+            local_now.date_naive(),
+            local_now.with_timezone(&Utc),
+            &fetch,
+        );
+
+        assert_eq!(response.status, 200);
+        assert_eq!(captured_start.borrow_mut().take().unwrap(), local_now);
+    }
+
+    #[test]
     fn empty_query_uses_the_configured_number_of_inclusive_days() {
         let range = parse_range(
             "/api/travel",
@@ -746,6 +843,8 @@ mod tests {
         assert_eq!(json["legs"][0]["source"]["event_id"], "EVENT-1");
         assert_eq!(json["legs"][0]["live_status"], serde_json::Value::Null);
         assert_eq!(json["warnings"], serde_json::json!([]));
+        assert_eq!(json["map"]["projection"], "globe");
+        assert_eq!(json["map"]["style_url"], DEFAULT_MAP_STYLE_URL);
     }
 
     #[test]
@@ -957,5 +1056,46 @@ mod tests {
         assert_eq!(response.content_type, JSON_CONTENT_TYPE);
         let json: serde_json::Value = serde_json::from_str(&response.body).unwrap();
         assert_eq!(json["error"]["kind"], "not_found");
+    }
+
+    #[test]
+    fn bundled_ui_and_csp_assets_are_self_hosted_and_safe_by_construction() {
+        let config = test_config();
+        let today = NaiveDate::from_ymd_opt(2026, 7, 12).unwrap();
+        let now = Utc::now();
+        for (path, content_type, needle) in [
+            ("/", HTML_CONTENT_TYPE, "/assets/app.js"),
+            ("/assets/app.css", CSS_CONTENT_TYPE, ".trip-card"),
+            ("/assets/app.js", JAVASCRIPT_CONTENT_TYPE, "greatCircle"),
+            (
+                "/assets/vendor/maplibre-gl/maplibre-gl.css",
+                CSS_CONTENT_TYPE,
+                ".maplibregl-map",
+            ),
+            (
+                "/assets/vendor/maplibre-gl/maplibre-gl-csp.js",
+                JAVASCRIPT_CONTENT_TYPE,
+                "maplibregl",
+            ),
+            (
+                "/assets/vendor/maplibre-gl/maplibre-gl-csp-worker.js",
+                JAVASCRIPT_CONTENT_TYPE,
+                "worker",
+            ),
+        ] {
+            let response = route_request(&Method::Get, path, &config, &[], today, now, &no_events);
+            assert_eq!(response.status, 200, "failed to serve {path}");
+            assert_eq!(response.content_type, content_type);
+            assert!(response.body.contains(needle), "unexpected body for {path}");
+        }
+        for unsafe_api in ["innerHTML", "outerHTML", "insertAdjacentHTML", ".setHTML("] {
+            assert!(
+                !APP_JAVASCRIPT.contains(unsafe_api),
+                "Calendar/provider text could reach unsafe DOM API {unsafe_api}"
+            );
+        }
+        assert!(CONTENT_SECURITY_POLICY.contains("script-src 'self'"));
+        assert!(CONTENT_SECURITY_POLICY.contains("worker-src 'self'"));
+        assert!(!CONTENT_SECURITY_POLICY.contains("unsafe-eval"));
     }
 }
