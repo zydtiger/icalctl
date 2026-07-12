@@ -15,20 +15,30 @@ mod models;
 mod output;
 mod reminders;
 pub mod travel;
+mod travel_server;
 mod version;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use cli::{Cli, Command};
+use cli::{Cli, Command, TravelCommand};
 use std::process::ExitCode;
 
 fn main() -> Result<ExitCode> {
     let Cli { json, command } = Cli::parse();
 
-    if let Command::Completions { shell } = command {
-        cli::print_completions(shell);
-        return Ok(ExitCode::SUCCESS);
-    }
+    let command = match command {
+        Command::Completions { shell } => {
+            cli::print_completions(shell);
+            return Ok(ExitCode::SUCCESS);
+        }
+        Command::Travel {
+            command: TravelCommand::Serve { calendar_ids },
+        } => {
+            travel_server::serve(calendar_ids, json)?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        command => command,
+    };
 
     let output = calendar::run(command)?;
     if let Err(error) = cache::update_from_output(&output) {

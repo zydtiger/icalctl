@@ -854,8 +854,17 @@ pub enum BatchCommand {
     },
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 pub enum TravelCommand {
+    /// Serve the read-only local travel visualization.
+    Serve {
+        /// Exact EventKit calendar id to include. Repeat to include multiple calendars.
+        /// Configured travel.calendar_ids are used when this option is omitted.
+        #[arg(long = "calendar-id")]
+        calendar_ids: Vec<String>,
+    },
+
     /// Format one flight leg and route it through normal event creation.
     Flight {
         /// Flight number, normalized to uppercase.
@@ -2107,5 +2116,26 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn travel_serve_accepts_only_stable_calendar_ids() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "travel",
+            "serve",
+            "--calendar-id",
+            "CAL-1",
+            "--calendar-id",
+            "CAL-2",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Travel {
+                command: TravelCommand::Serve { calendar_ids }
+            } if calendar_ids == ["CAL-1", "CAL-2"]
+        ));
     }
 }
