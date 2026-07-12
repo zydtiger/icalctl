@@ -8,6 +8,15 @@ use chrono::DateTime;
 
 pub fn print_human_output(output: &JsonOutput) {
     match output {
+        JsonOutput::Version { version } => {
+            println!("{} {}", version.name, version.version);
+            println!(
+                "git commit: {}",
+                version.git_commit.as_deref().unwrap_or("unknown")
+            );
+            println!("target: {}", version.target);
+            println!("profile: {}", version.profile);
+        }
         JsonOutput::Status(status) => {
             println!("Calendar authorization: {}", status.authorization);
         }

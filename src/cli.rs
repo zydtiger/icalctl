@@ -7,7 +7,8 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(
     name = "icalctl",
-    about = "Manage local macOS Apple Calendar and Reminders data through EventKit"
+    about = "Manage local macOS Apple Calendar and Reminders data through EventKit",
+    version
 )]
 pub struct Cli {
     /// Print compact JSON instead of human-friendly text.
@@ -231,6 +232,9 @@ impl From<EventJsonRecurrence> for EventRecurrenceArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Print semantic version and build provenance.
+    Version,
+
     /// Print EventKit Calendar authorization status.
     Status,
 
@@ -941,6 +945,21 @@ pub fn print_completions(shell: Shell) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_command_parses() {
+        let cli = Cli::try_parse_from(["icalctl", "version"]).unwrap();
+
+        assert!(matches!(cli.command, Command::Version));
+    }
+
+    #[test]
+    fn standard_version_flag_uses_cargo_package_version() {
+        let error = Cli::try_parse_from(["icalctl", "--version"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(error.to_string().contains(env!("CARGO_PKG_VERSION")));
+    }
 
     #[test]
     fn source_qualifier_requires_calendar_title() {

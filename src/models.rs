@@ -5,6 +5,9 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JsonOutput {
+    Version {
+        version: VersionReport,
+    },
     Status(StatusReport),
     Doctor {
         doctor: DoctorReport,
@@ -58,6 +61,15 @@ pub enum JsonOutput {
     Deleted {
         deleted: DeletedReport,
     },
+}
+
+#[derive(Debug, Serialize)]
+pub struct VersionReport {
+    pub name: String,
+    pub version: String,
+    pub git_commit: Option<String>,
+    pub target: String,
+    pub profile: String,
 }
 
 impl JsonOutput {
@@ -633,6 +645,26 @@ mod tests {
             allowed_entity_types: vec!["event".to_string()],
             supported_event_availabilities: vec!["busy".to_string()],
         }
+    }
+
+    #[test]
+    fn version_output_has_stable_machine_readable_fields() {
+        let output = JsonOutput::Version {
+            version: VersionReport {
+                name: "icalctl".to_string(),
+                version: "0.1.0".to_string(),
+                git_commit: Some("abc123".to_string()),
+                target: "aarch64-apple-darwin".to_string(),
+                profile: "release".to_string(),
+            },
+        };
+        let value = serde_json::to_value(output).unwrap();
+
+        assert_eq!(value["type"], "version");
+        assert_eq!(value["version"]["version"], "0.1.0");
+        assert_eq!(value["version"]["git_commit"], "abc123");
+        assert_eq!(value["version"]["target"], "aarch64-apple-darwin");
+        assert_eq!(value["version"]["profile"], "release");
     }
 
     #[test]

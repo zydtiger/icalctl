@@ -52,6 +52,21 @@ Cargo's normal bin directory, usually:
 
 Make sure `~/.cargo/bin` is in `PATH`.
 
+Verify the installed build:
+
+```sh
+icalctl version
+icalctl version --json
+icalctl --version
+```
+
+`Cargo.toml`'s `[package].version` is the single semantic-version source. The
+build also embeds the current Git commit when built from a checkout, plus the
+target triple and Cargo profile. Source archives without Git metadata report an
+unknown commit unless `ICALCTL_GIT_COMMIT` is set while building. To release a
+new version, update `Cargo.toml`, run the full checks, and reinstall with
+`cargo install --path . --force`.
+
 ### Install the agent skill
 
 The recommended way to install the bundled `icalctl` agent skill is to copy
@@ -86,6 +101,7 @@ request to that parent process instead of the terminal.
 Check current authorization status:
 
 ```sh
+icalctl version
 icalctl status
 icalctl status --json
 icalctl reminders status --json

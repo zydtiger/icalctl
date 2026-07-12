@@ -35,6 +35,9 @@ use std::path::{Path, PathBuf};
 
 pub fn run(command: Command) -> Result<JsonOutput> {
     match command {
+        Command::Version => Ok(JsonOutput::Version {
+            version: crate::version::report(),
+        }),
         Command::Status => Ok(JsonOutput::Status(StatusReport {
             authorization: authorization_string(),
         })),

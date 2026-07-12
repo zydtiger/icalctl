@@ -13,6 +13,7 @@ mod models;
 mod output;
 mod reminders;
 mod travel;
+mod version;
 
 use anyhow::{Context, Result};
 use clap::Parser;

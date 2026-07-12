@@ -15,6 +15,18 @@ Install from the project root with:
 cargo install --path .
 ```
 
+Verify which build is active before relying on newly added flags:
+
+```sh
+icalctl version
+icalctl version --json
+```
+
+Treat `Cargo.toml`'s package version as the semantic-version source. The
+version report also includes the embedded Git commit when available, target
+triple, and build profile. Reinstall an updated checkout with
+`cargo install --path . --force`; copying `SKILL.md` does not update the binary.
+
 ## Operating Rules
 
 - Prefer `icalctl <command> --json` whenever output must be parsed by an agent or script.
@@ -313,6 +325,17 @@ loaded. Dispatch on the top-level `type` and tolerate additive fields in the
 documented schema-generation-1 contract.
 
 ## Commands
+
+### `version`
+
+Print semantic version and build provenance without requesting EventKit
+permissions:
+
+```sh
+icalctl version
+icalctl version --json
+icalctl --version
+```
 
 ### `status`
 
