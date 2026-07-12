@@ -21,8 +21,8 @@ use chrono::{
     DateTime, Datelike, FixedOffset, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc,
 };
 use objc2::rc::Retained;
-use objc2::runtime::Bool;
-use objc2::{AnyThread, Message};
+use objc2::runtime::{AnyClass, AnyObject, Bool};
+use objc2::{AnyThread, Message, msg_send};
 use objc2_core_location::CLLocation;
 use objc2_event_kit::{
     EKAlarm, EKAlarmProximity, EKAlarmType, EKAuthorizationStatus, EKCalendar, EKCalendarType,
@@ -106,6 +106,7 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
             title,
             json_file,
             list_selector,
+            parent_id,
             due,
             start,
             time_zone,
@@ -126,6 +127,7 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
                 title,
                 json_file,
                 list_selector,
+                parent_id,
                 due,
                 start,
                 time_zone,
@@ -154,6 +156,8 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
             id,
             title,
             list_selector,
+            parent_id,
+            clear_parent,
             due,
             clear_due,
             start,
@@ -180,6 +184,8 @@ fn run_with_store(store: &impl ReminderStore, command: RemindersCommand) -> Resu
                 id,
                 title,
                 list_selector,
+                parent_id,
+                clear_parent,
                 due,
                 clear_due,
                 start,
@@ -216,6 +222,7 @@ struct AddReminderCliCommand {
     title: Option<String>,
     json_file: Option<PathBuf>,
     list_selector: WriteReminderListSelectorArgs,
+    parent_id: Option<String>,
     due: Option<String>,
     start: Option<String>,
     time_zone: Option<String>,
@@ -236,6 +243,7 @@ struct AddReminderCliCommand {
 struct AddReminderCommand {
     title: String,
     list_selector: WriteReminderListSelectorArgs,
+    parent_id: Option<String>,
     due: Option<String>,
     start: Option<String>,
     time_zone: Option<String>,
@@ -256,6 +264,7 @@ struct AddReminderCommand {
 struct ReminderSaveDraft {
     title: String,
     list_id: String,
+    parent_id: Option<String>,
     due: Option<ParsedReminderDate>,
     start: Option<ParsedReminderDate>,
     notes: Option<String>,
@@ -269,6 +278,7 @@ struct ReminderSaveDraft {
 
 #[derive(Clone, Default)]
 struct ReminderAddPatch {
+    parent_id: Option<String>,
     start: Option<ParsedReminderDate>,
     notes: Option<String>,
     location: Option<String>,
@@ -283,6 +293,8 @@ struct UpdateReminderCommand {
     id: String,
     title: Option<String>,
     list_selector: WriteReminderListSelectorArgs,
+    parent_id: Option<String>,
+    clear_parent: bool,
     due: Option<String>,
     clear_due: bool,
     start: Option<String>,
@@ -309,6 +321,7 @@ struct UpdateReminderCommand {
 struct ReminderLifecyclePatch {
     title: Option<String>,
     list_id: Option<String>,
+    parent_id: Option<Option<String>>,
     due: Option<Option<ParsedReminderDate>>,
     start: Option<Option<ParsedReminderDate>>,
     notes: Option<Option<String>>,
@@ -396,6 +409,7 @@ struct ReminderJsonDraft {
     list_id: Option<String>,
     list_source: Option<String>,
     source_id: Option<String>,
+    parent_id: Option<String>,
     due: Option<String>,
     start: Option<String>,
     #[serde(default)]
@@ -443,6 +457,7 @@ struct ReminderBatchDefaults {
     list_id: Option<String>,
     list_source: Option<String>,
     source_id: Option<String>,
+    parent_id: Option<String>,
     time_zone: Option<String>,
     priority: Option<ReminderPriorityArg>,
     notify_at_due: Option<bool>,
@@ -489,6 +504,7 @@ fn add_reminder_from_cli(
                 .title
                 .context("reminder add requires TITLE or --json-file")?,
             list_selector: input.list_selector,
+            parent_id: input.parent_id,
             due: input.due,
             start: input.start,
             time_zone: input.time_zone,
@@ -511,6 +527,7 @@ fn add_reminder_from_cli(
 fn add_cli_has_individual_fields(input: &AddReminderCliCommand) -> bool {
     input.title.is_some()
         || !write_list_selector_is_empty(&input.list_selector)
+        || input.parent_id.is_some()
         || input.due.is_some()
         || input.start.is_some()
         || input.time_zone.is_some()
@@ -602,6 +619,7 @@ fn json_draft_to_command(
             list_source,
             source_id,
         },
+        parent_id: draft.parent_id.or_else(|| defaults.parent_id.clone()),
         due: draft.due,
         start: draft.start,
         time_zone,
@@ -667,6 +685,7 @@ fn validate_json_list_selector(
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ReminderBatchIdentity {
     list_id: String,
+    parent_id: Option<String>,
     title: String,
     due: String,
 }
@@ -833,6 +852,7 @@ fn mark_duplicate_reminder_identities(slots: &mut [ReminderBatchSlot]) {
             positions
                 .entry(ReminderBatchIdentity {
                     list_id: draft.list_id.clone(),
+                    parent_id: draft.parent_id.clone(),
                     title: draft.title.clone(),
                     due,
                 })
@@ -1084,20 +1104,46 @@ fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Resu
     let geofence = parse_geofence(&command.schedule)?;
     let recurrence = parse_recurrence(&command.schedule)?;
 
+    let parent = command
+        .parent_id
+        .as_deref()
+        .map(|id| resolve_parent(store, id))
+        .transpose()?;
     let lists = store.lists()?;
-    let default_list = if write_list_selector_is_empty(&command.list_selector) {
-        Some(store.default_list()?)
+    let parent_list = parent
+        .as_ref()
+        .map(|parent| reminder_parent_list(&lists, parent))
+        .transpose()?;
+    let (list, list_selection) = if write_list_selector_is_empty(&command.list_selector) {
+        if let Some(parent_list) = parent_list.as_ref() {
+            (parent_list.clone(), ReminderListSelection::Explicit)
+        } else {
+            let default_list = store.default_list()?;
+            resolve_write_list(&lists, Some(&default_list), &command.list_selector)?
+        }
     } else {
-        None
+        resolve_write_list(&lists, None, &command.list_selector)?
     };
-    let (list, list_selection) =
-        resolve_write_list(&lists, default_list.as_ref(), &command.list_selector)?;
+    if let Some(parent_list) = parent_list.as_ref()
+        && parent_list.id != list.id
+    {
+        bail!(
+            "parent reminder {} [{}] is in {} [{}], but the child target is {} [{}]; parent and child must use the same reminder list",
+            parent.as_ref().expect("parent is present").title,
+            parent.as_ref().expect("parent is present").id,
+            parent_list.title,
+            parent_list.id,
+            list.title,
+            list.id
+        );
+    }
     let priority_arg = command.priority;
     let priority_value = priority_arg.map(priority_arg_value).unwrap_or(0);
 
     let save = ReminderSaveDraft {
         title: command.title.clone(),
         list_id: list.id.clone(),
+        parent_id: command.parent_id.clone(),
         due: due.clone(),
         start: start.clone(),
         notes: notes.clone(),
@@ -1109,6 +1155,7 @@ fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Resu
         recurrence: recurrence.clone(),
     };
     let patch = ReminderAddPatch {
+        parent_id: command.parent_id.clone(),
         start: start.clone(),
         notes: notes.clone(),
         location: command.location.clone(),
@@ -1124,6 +1171,7 @@ fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Resu
         &existing,
         &command.title,
         due.as_ref(),
+        command.parent_id.as_deref(),
         command.duplicate_window_seconds,
     );
     if matches.len() > 1 {
@@ -1139,6 +1187,9 @@ fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Resu
         );
     }
     let matched = matches.into_iter().next();
+    if let (Some(matched), Some(parent)) = (matched.as_ref(), parent.as_ref()) {
+        validate_parent_assignment(store, &matched.id, &list.id, parent)?;
+    }
     if let Some(matched) = matched.as_ref()
         && command.if_exists == IfExistsArg::Error
     {
@@ -1192,6 +1243,7 @@ fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Resu
         operation: operation.to_string(),
         matched_reminder_id: matched.as_ref().map(|reminder| reminder.id.clone()),
         title: command.title.clone(),
+        parent_id: command.parent_id.clone(),
         list: list.title.clone(),
         list_id: list.id.clone(),
         list_source: list.source.clone(),
@@ -1295,6 +1347,11 @@ fn update_reminder(
 
     let mut patch = ReminderLifecyclePatch {
         title: command.title.clone(),
+        parent_id: if command.clear_parent {
+            Some(None)
+        } else {
+            command.parent_id.clone().map(Some)
+        },
         due: if command.clear_due {
             Some(None)
         } else {
@@ -1329,6 +1386,41 @@ fn update_reminder(
         let (list, _) = resolve_write_list(&lists, None, &command.list_selector)?;
         patch.list_id = Some(list.id.clone());
         moved_list = Some(list);
+    }
+
+    let resulting_list_id = moved_list
+        .as_ref()
+        .map(|list| list.id.as_str())
+        .or(before.list_id.as_deref())
+        .context("reminder list is unavailable")?;
+    if let Some(parent_id) = command.parent_id.as_deref() {
+        let parent = resolve_parent(store, parent_id)?;
+        validate_parent_assignment(store, &id, resulting_list_id, &parent)?;
+    } else if !command.clear_parent
+        && let Some(parent_id) = before.parent_id.as_deref()
+    {
+        let parent = resolve_parent(store, parent_id)?;
+        let parent_list_id = parent
+            .list_id
+            .as_deref()
+            .context("parent reminder list is unavailable")?;
+        if parent_list_id != resulting_list_id {
+            bail!(
+                "moving child reminder {} [{}] away from parent {} [{}] requires --clear-parent or --parent-id for a parent in the destination list",
+                before.title,
+                before.id,
+                parent.title,
+                parent.id
+            );
+        }
+    }
+    if moved_list.is_some() && before.child_count > 0 {
+        bail!(
+            "cannot move parent reminder {} [{}] while it has {} direct child reminder(s); reparent or clear those children first",
+            before.title,
+            before.id,
+            before.child_count
+        );
     }
 
     if command.time_zone.is_some() || command.clear_time_zone {
@@ -1440,6 +1532,14 @@ fn complete_reminder(
     let id = resolve_reminder_ref(reference)?;
     let before = store.get(&id)?;
     ensure_reminder_writable(&before, "complete")?;
+    if before.child_count > 0 {
+        bail!(
+            "cannot complete parent reminder {} [{}] while it has {} direct child reminder(s); complete or reparent the children first",
+            before.title,
+            before.id,
+            before.child_count
+        );
+    }
     let completed_at = match completed_at {
         Some(value) => DateTime::parse_from_rfc3339(value)
             .with_context(|| {
@@ -1500,6 +1600,14 @@ fn delete_reminder(store: &impl ReminderStore, reference: &str, force: bool) -> 
     let id = resolve_reminder_ref(reference)?;
     let reminder = store.get(&id)?;
     ensure_reminder_writable(&reminder, "delete")?;
+    if reminder.child_count > 0 {
+        bail!(
+            "cannot delete parent reminder {} [{}] while it has {} direct child reminder(s); reparent or delete the children first",
+            reminder.title,
+            reminder.id,
+            reminder.child_count
+        );
+    }
     if !force {
         confirm_reminder_delete(&reminder)?;
     }
@@ -1544,6 +1652,82 @@ fn ensure_reminder_writable(reminder: &ReminderReport, operation: &str) -> Resul
     }
 }
 
+fn resolve_parent(store: &impl ReminderStore, parent_id: &str) -> Result<ReminderReport> {
+    let parent = store
+        .get(parent_id)
+        .with_context(|| format!("parent reminder not found: {parent_id}"))?;
+    ensure_reminder_writable(&parent, "use as a parent")?;
+    if parent.completed {
+        bail!(
+            "completed reminder {} [{}] cannot be used as a parent",
+            parent.title,
+            parent.id
+        );
+    }
+    Ok(parent)
+}
+
+fn reminder_parent_list(
+    lists: &[ReminderListReport],
+    parent: &ReminderReport,
+) -> Result<ReminderListReport> {
+    let list_id = parent
+        .list_id
+        .as_deref()
+        .context("parent reminder list is unavailable")?;
+    lists
+        .iter()
+        .find(|list| list.id == list_id)
+        .cloned()
+        .with_context(|| format!("parent reminder list is no longer available: {list_id}"))
+}
+
+fn validate_parent_assignment(
+    store: &impl ReminderStore,
+    child_id: &str,
+    child_list_id: &str,
+    parent: &ReminderReport,
+) -> Result<()> {
+    if parent.id == child_id {
+        bail!("a reminder cannot be its own parent: {child_id}");
+    }
+    let parent_list_id = parent
+        .list_id
+        .as_deref()
+        .context("parent reminder list is unavailable")?;
+    if parent_list_id != child_list_id {
+        bail!(
+            "parent reminder {} [{}] is in list {}, but child {} is in list {}; parent and child must use the same reminder list",
+            parent.title,
+            parent.id,
+            parent_list_id,
+            child_id,
+            child_list_id
+        );
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut current = Some(parent.clone());
+    while let Some(reminder) = current {
+        if reminder.id == child_id {
+            bail!("parent assignment would create a reminder hierarchy cycle involving {child_id}");
+        }
+        if !seen.insert(reminder.id.clone()) {
+            bail!(
+                "existing reminder hierarchy contains a cycle at {} [{}]",
+                reminder.title,
+                reminder.id
+            );
+        }
+        current = reminder
+            .parent_id
+            .as_deref()
+            .map(|id| resolve_parent(store, id))
+            .transpose()?;
+    }
+    Ok(())
+}
+
 fn confirm_reminder_delete(reminder: &ReminderReport) -> Result<()> {
     let mut stderr = io::stderr();
     let list = reminder.list.as_deref().unwrap_or("unknown list");
@@ -1570,6 +1754,7 @@ fn confirm_reminder_delete(reminder: &ReminderReport) -> Result<()> {
 fn lifecycle_changed_fields(patch: &ReminderLifecyclePatch) -> Vec<String> {
     [
         (patch.title.is_some(), "title"),
+        (patch.parent_id.is_some(), "parent"),
         (patch.list_id.is_some(), "list"),
         (patch.due.is_some(), "due"),
         (patch.start.is_some(), "start"),
@@ -1597,6 +1782,9 @@ fn preview_lifecycle_patch(
     let mut result = before.clone();
     if let Some(title) = &patch.title {
         result.title = title.clone();
+    }
+    if let Some(parent_id) = &patch.parent_id {
+        result.parent_id = parent_id.clone();
     }
     if let Some(list) = moved_list {
         result.list = Some(list.title.clone());
@@ -2232,12 +2420,15 @@ fn find_duplicates<'a>(
     reminders: &'a [ReminderReport],
     title: &str,
     due: Option<&ParsedReminderDate>,
+    parent_id: Option<&str>,
     window_seconds: i64,
 ) -> Vec<&'a ReminderReport> {
     reminders
         .iter()
         .filter(|reminder| {
-            reminder.title == title && due_matches(reminder.due.as_ref(), due, window_seconds)
+            reminder.title == title
+                && reminder.parent_id.as_deref() == parent_id
+                && due_matches(reminder.due.as_ref(), due, window_seconds)
         })
         .collect()
 }
@@ -2656,7 +2847,7 @@ impl EventKitReminderStore {
             .collect()
     }
 
-    fn fetch_reports(&self, list_ids: &[String]) -> Result<Vec<ReminderReport>> {
+    fn fetch_reports(&self, list_ids: &[String], details: bool) -> Result<Vec<ReminderReport>> {
         let selected: Vec<Retained<EKCalendar>> = if list_ids.is_empty() {
             self.ek_lists()
         } else {
@@ -2681,10 +2872,11 @@ impl EventKitReminderStore {
             } else {
                 let reminders = unsafe { Retained::retain(reminders) }
                     .expect("EventKit returned a dangling reminders array");
-                reminders
+                let reminders = reminders
                     .iter()
-                    .map(|reminder| reminder_to_report(&reminder, false))
-                    .collect()
+                    .map(|reminder| reminder.retain())
+                    .collect::<Vec<_>>();
+                reminders_with_hierarchy(&reminders, details)
             };
             let (lock, cvar) = &*callback_result;
             let mut state = lock.lock().expect("reminder fetch lock poisoned");
@@ -2707,6 +2899,13 @@ impl EventKitReminderStore {
         state
             .take()
             .ok_or_else(|| anyhow!("EventKit reminder fetch returned no result"))
+    }
+
+    fn report_by_id(&self, id: &str) -> Result<ReminderReport> {
+        self.fetch_reports(&[], true)?
+            .into_iter()
+            .find(|reminder| reminder.id == id)
+            .with_context(|| format!("reminder is no longer available: {id}"))
     }
 }
 
@@ -2753,13 +2952,12 @@ impl ReminderStore for EventKitReminderStore {
     }
 
     fn fetch(&self, list_ids: &[String]) -> Result<Vec<ReminderReport>> {
-        self.fetch_reports(list_ids)
+        self.fetch_reports(list_ids, false)
             .context("failed to fetch reminders through EventKit")
     }
 
     fn get(&self, id: &str) -> Result<ReminderReport> {
-        let reminder = self.find_reminder(id)?;
-        Ok(reminder_to_report(&reminder, true))
+        self.report_by_id(id)
     }
 
     fn create(&self, draft: &ReminderSaveDraft) -> Result<ReminderReport> {
@@ -2804,7 +3002,21 @@ impl ReminderStore for EventKitReminderStore {
             set_reminder_recurrence(&reminder, Some(recurrence));
         }
         self.save_reminder(&reminder)?;
-        Ok(reminder_to_report(&reminder, true))
+        let id = unsafe { reminder.calendarItemIdentifier() }.to_string();
+        if let Some(parent_id) = &draft.parent_id
+            && let Err(error) = self.set_parent_relationship(&id, Some(parent_id))
+        {
+            let rollback = self.remove_reminder_by_id(&id);
+            return match rollback {
+                Ok(()) => Err(error.context(
+                    "failed to create native child reminder; the flat reminder was rolled back",
+                )),
+                Err(rollback_error) => Err(error.context(format!(
+                    "failed to create native child reminder and failed to roll back flat reminder {id}: {rollback_error:#}"
+                ))),
+            };
+        }
+        self.report_by_id(&id)
     }
 
     fn update_add_fields(&self, id: &str, patch: &ReminderAddPatch) -> Result<ReminderReport> {
@@ -2839,7 +3051,10 @@ impl ReminderStore for EventKitReminderStore {
             set_reminder_recurrence(&reminder, Some(recurrence));
         }
         self.save_reminder(&reminder)?;
-        Ok(reminder_to_report(&reminder, true))
+        if let Some(parent_id) = &patch.parent_id {
+            self.set_parent_relationship(id, Some(parent_id))?;
+        }
+        self.report_by_id(id)
     }
 
     fn update(&self, id: &str, patch: &ReminderLifecyclePatch) -> Result<ReminderReport> {
@@ -2906,7 +3121,10 @@ impl ReminderStore for EventKitReminderStore {
             set_reminder_recurrence(&reminder, recurrence.as_ref());
         }
         self.save_reminder(&reminder)?;
-        Ok(reminder_to_report(&reminder, true))
+        if let Some(parent_id) = &patch.parent_id {
+            self.set_parent_relationship(id, parent_id.as_deref())?;
+        }
+        self.report_by_id(id)
     }
 
     fn set_completion(
@@ -2930,7 +3148,7 @@ impl ReminderStore for EventKitReminderStore {
             None => unsafe { reminder.setCompletionDate(None) },
         }
         self.save_reminder(&reminder)?;
-        Ok(reminder_to_report(&reminder, true))
+        self.report_by_id(id)
     }
 
     fn delete(&self, id: &str) -> Result<()> {
@@ -2953,6 +3171,21 @@ impl ReminderStore for EventKitReminderStore {
 }
 
 impl EventKitReminderStore {
+    fn set_parent_relationship(&self, child_id: &str, parent_id: Option<&str>) -> Result<()> {
+        set_reminderkit_parent(child_id, parent_id)
+    }
+
+    fn remove_reminder_by_id(&self, id: &str) -> Result<()> {
+        let reminder = self.find_reminder(id)?;
+        unsafe {
+            self.store
+                .removeReminder_commit_error(&reminder, true)
+                .map_err(|error| anyhow!("failed to remove reminder: {error:?}"))?;
+            self.store.refreshSourcesIfNecessary();
+        }
+        Ok(())
+    }
+
     fn find_reminder(&self, id: &str) -> Result<Retained<EKReminder>> {
         unsafe { self.store.refreshSourcesIfNecessary() };
         let id = NSString::from_str(id);
@@ -3119,6 +3352,9 @@ fn reminder_to_report(reminder: &EKReminder, details: bool) -> ReminderReport {
     ReminderReport {
         id: unsafe { reminder.calendarItemIdentifier() }.to_string(),
         title: unsafe { reminder.title() }.to_string(),
+        parent_id: None,
+        child_count: 0,
+        child_ids: details.then(Vec::new),
         completed: unsafe { reminder.isCompleted() },
         completion_date: unsafe { reminder.completionDate() }
             .as_deref()
@@ -3160,6 +3396,114 @@ fn reminder_to_report(reminder: &EKReminder, details: bool) -> ReminderReport {
             .map(|value| value.to_string()),
         item_time_zone: unsafe { reminder.timeZone() }.map(|zone| zone.name().to_string()),
     }
+}
+
+fn reminders_with_hierarchy(
+    reminders: &[Retained<EKReminder>],
+    details: bool,
+) -> Vec<ReminderReport> {
+    let public_ids = reminders
+        .iter()
+        .map(|reminder| unsafe { reminder.calendarItemIdentifier() }.to_string())
+        .collect::<Vec<_>>();
+    let parent_ids = public_ids
+        .iter()
+        .map(|id| reminderkit_parent_id(id).ok().flatten())
+        .collect::<Vec<_>>();
+    let mut children = vec![Vec::<String>::new(); reminders.len()];
+    for (child_index, parent_id) in parent_ids.iter().enumerate() {
+        if let Some(parent_index) = parent_id
+            .as_deref()
+            .and_then(|parent_id| public_ids.iter().position(|id| id == parent_id))
+        {
+            children[parent_index].push(public_ids[child_index].clone());
+        }
+    }
+    for child_ids in &mut children {
+        child_ids.sort();
+    }
+
+    reminders
+        .iter()
+        .enumerate()
+        .map(|(index, reminder)| {
+            let mut report = reminder_to_report(reminder, details);
+            report.parent_id = parent_ids[index].clone();
+            report.child_count = children[index].len();
+            report.child_ids = details.then(|| children[index].clone());
+            report
+        })
+        .collect()
+}
+
+fn private_class(name: &str) -> Result<&'static AnyClass> {
+    let class = match name {
+        "NSUUID" => AnyClass::get(c"NSUUID"),
+        "REMReminder" => AnyClass::get(c"REMReminder"),
+        "REMSaveRequest" => AnyClass::get(c"REMSaveRequest"),
+        "REMStore" => AnyClass::get(c"REMStore"),
+        _ => None,
+    };
+    class.with_context(|| format!("private macOS class {name} is unavailable"))
+}
+
+fn reminderkit_store() -> Result<Retained<AnyObject>> {
+    let class = private_class("REMStore")?;
+    Ok(unsafe { msg_send![class, new] })
+}
+
+fn reminderkit_reminder(store: &AnyObject, id: &str) -> Result<Retained<AnyObject>> {
+    let uuid_class = private_class("NSUUID")?;
+    let id = NSString::from_str(id);
+    let uuid: Retained<AnyObject> =
+        unsafe { msg_send![msg_send![uuid_class, alloc], initWithUUIDString: &*id] };
+    let reminder_class = private_class("REMReminder")?;
+    let object_id: Retained<AnyObject> =
+        unsafe { msg_send![reminder_class, objectIDWithUUID: &*uuid] };
+    let reminder: Option<Retained<AnyObject>> = unsafe {
+        msg_send![store, fetchReminderWithObjectID: &*object_id, error: std::ptr::null_mut::<*mut NSError>()]
+    };
+    reminder.with_context(|| format!("ReminderKit could not find reminder {id}"))
+}
+
+fn reminderkit_parent_id(id: &str) -> Result<Option<String>> {
+    let store = reminderkit_store()?;
+    let reminder = reminderkit_reminder(&store, id)?;
+    let parent: Option<Retained<AnyObject>> = unsafe { msg_send![&*reminder, parentReminder] };
+    let Some(parent) = parent else {
+        return Ok(None);
+    };
+    let storage: Retained<AnyObject> = unsafe { msg_send![&*parent, storage] };
+    let object_id: Retained<AnyObject> = unsafe { msg_send![&*storage, objectID] };
+    let uuid: Retained<AnyObject> = unsafe { msg_send![&*object_id, uuid] };
+    let uuid_string: Retained<NSString> = unsafe { msg_send![&*uuid, UUIDString] };
+    Ok(Some(uuid_string.to_string()))
+}
+
+fn set_reminderkit_parent(child_id: &str, parent_id: Option<&str>) -> Result<()> {
+    let store = reminderkit_store()?;
+    let child = reminderkit_reminder(&store, child_id)?;
+    let save_class = private_class("REMSaveRequest")?;
+    let request: Retained<AnyObject> =
+        unsafe { msg_send![msg_send![save_class, alloc], initWithStore: &*store] };
+    let child_change: Retained<AnyObject> =
+        unsafe { msg_send![&*request, updateReminder: &*child] };
+    if let Some(parent_id) = parent_id {
+        let parent = reminderkit_reminder(&store, parent_id)?;
+        let parent_change: Retained<AnyObject> =
+            unsafe { msg_send![&*request, updateReminder: &*parent] };
+        let context: Retained<AnyObject> = unsafe { msg_send![&*parent_change, subtaskContext] };
+        let _: () = unsafe { msg_send![&*context, addReminderChangeItem: &*child_change] };
+    } else {
+        let _: () = unsafe { msg_send![&*child_change, removeFromParentReminder] };
+    }
+    let saved: Bool = unsafe {
+        msg_send![&*request, saveSynchronouslyWithError: std::ptr::null_mut::<*mut NSError>()]
+    };
+    if !saved.as_bool() {
+        bail!("ReminderKit failed to save the reminder hierarchy");
+    }
+    Ok(())
 }
 
 fn priority_name(value: usize) -> ReminderPriority {
@@ -3425,6 +3769,9 @@ mod tests {
         ReminderReport {
             id: id.to_string(),
             title: title.to_string(),
+            parent_id: None,
+            child_count: 0,
+            child_ids: None,
             completed,
             completion_date: None,
             priority: ReminderPriority::None,
@@ -3559,6 +3906,7 @@ mod tests {
             self.creates.set(self.creates.get() + 1);
             let mut report = reminder("CREATED", &draft.title, false, None);
             report.list_id = Some(draft.list_id.clone());
+            report.parent_id = draft.parent_id.clone();
             report.due = draft.due.as_ref().map(|value| value.report.clone());
             report.start = draft.start.as_ref().map(|value| value.report.clone());
             report.notes = draft.notes.clone();
@@ -3590,6 +3938,9 @@ mod tests {
             self.updates.set(self.updates.get() + 1);
             self.last_patch.replace(Some(patch.clone()));
             let mut report = self.get(id)?;
+            if let Some(parent_id) = &patch.parent_id {
+                report.parent_id = Some(parent_id.clone());
+            }
             if let Some(start) = &patch.start {
                 report.start = Some(start.report.clone());
             }
@@ -3692,6 +4043,7 @@ mod tests {
         AddReminderCommand {
             title: title.to_string(),
             list_selector: write_selector(Some("A")),
+            parent_id: None,
             due: None,
             start: None,
             time_zone: None,
@@ -3825,6 +4177,14 @@ mod tests {
     }
 
     #[test]
+    fn private_parent_bridge_runtime_classes_are_available() {
+        let _store = unsafe { EKEventStore::new() };
+        for name in ["NSUUID", "REMReminder", "REMSaveRequest", "REMStore"] {
+            assert!(private_class(name).is_ok(), "missing {name}");
+        }
+    }
+
+    #[test]
     fn timed_components_expose_local_timezone_and_normalized_values() {
         let components = NSDateComponents::new();
         components.setCalendar(Some(&NSCalendar::currentCalendar()));
@@ -3952,6 +4312,44 @@ mod tests {
         assert_eq!(draft.list_id, "A");
         assert_eq!(draft.list_selection, ReminderListSelection::EventkitDefault);
         assert!(draft.due.is_none());
+    }
+
+    #[test]
+    fn parented_add_inherits_exact_parent_list_without_default_lookup() {
+        let store = FakeStore::new();
+        store
+            .reminders
+            .borrow_mut()
+            .push(reminder("PARENT", "Large task", false, None));
+        let mut command = add_command("Child task");
+        command.list_selector = write_selector(None);
+        command.parent_id = Some("PARENT".to_string());
+
+        let output = add_reminder(&store, command).unwrap();
+        let JsonOutput::ReminderDryRun { draft, .. } = output else {
+            panic!("expected reminder dry run");
+        };
+        assert_eq!(draft.parent_id.as_deref(), Some("PARENT"));
+        assert_eq!(draft.list_id, "A");
+        assert_eq!(draft.list_selection, ReminderListSelection::Explicit);
+        assert_eq!(store.default_list_calls.get(), 0);
+    }
+
+    #[test]
+    fn parented_add_rejects_a_different_explicit_list() {
+        let mut store = FakeStore::new();
+        store.lists.push(list("B", "Work", "iCloud", "S1"));
+        store
+            .reminders
+            .borrow_mut()
+            .push(reminder("PARENT", "Large task", false, None));
+        let mut command = add_command("Child task");
+        command.list_selector = write_selector(Some("B"));
+        command.parent_id = Some("PARENT".to_string());
+
+        let error = add_reminder(&store, command).unwrap_err().to_string();
+        assert!(error.contains("parent and child must use the same reminder list"));
+        assert_eq!(store.creates.get(), 0);
     }
 
     #[test]
@@ -4240,6 +4638,8 @@ mod tests {
             id: id.to_string(),
             title: None,
             list_selector: write_selector(None),
+            parent_id: None,
+            clear_parent: false,
             due: None,
             clear_due: false,
             start: None,
@@ -4310,6 +4710,59 @@ mod tests {
             Some("Europe/Helsinki")
         );
         assert_eq!(store.lifecycle_updates.get(), 0);
+        assert_eq!(store.completion_updates.get(), 0);
+        assert_eq!(store.deletes.get(), 0);
+    }
+
+    #[test]
+    fn lifecycle_update_can_reparent_clear_parent_and_reject_cycles() {
+        let store = FakeStore::new();
+        let child = reminder("CHILD", "Child", false, None);
+        let parent = reminder("PARENT", "Parent", false, None);
+        store.reminders.borrow_mut().extend([child, parent]);
+
+        let mut reparent = update_command("CHILD");
+        reparent.parent_id = Some("PARENT".to_string());
+        let output = update_reminder(&store, reparent).unwrap();
+        let JsonOutput::ReminderMutationDryRun { draft, .. } = output else {
+            panic!("expected mutation dry run");
+        };
+        assert_eq!(draft.changed_fields, ["parent"]);
+        assert_eq!(draft.result.parent_id.as_deref(), Some("PARENT"));
+
+        store.reminders.borrow_mut()[0].parent_id = Some("PARENT".to_string());
+        let mut clear = update_command("CHILD");
+        clear.clear_parent = true;
+        let output = update_reminder(&store, clear).unwrap();
+        let JsonOutput::ReminderMutationDryRun { draft, .. } = output else {
+            panic!("expected mutation dry run");
+        };
+        assert!(draft.result.parent_id.is_none());
+
+        store.reminders.borrow_mut()[1].parent_id = Some("CHILD".to_string());
+        let mut cycle = update_command("CHILD");
+        cycle.parent_id = Some("PARENT".to_string());
+        let error = update_reminder(&store, cycle).unwrap_err().to_string();
+        assert!(error.contains("would create a reminder hierarchy cycle"));
+        assert_eq!(store.lifecycle_updates.get(), 0);
+    }
+
+    #[test]
+    fn parent_mutations_that_may_cascade_are_blocked() {
+        let store = FakeStore::new();
+        let mut parent = reminder("PARENT", "Parent", false, None);
+        parent.child_count = 1;
+        parent.child_ids = Some(vec!["CHILD".to_string()]);
+        store.reminders.borrow_mut().push(parent);
+
+        let complete = complete_reminder(&store, "PARENT", None, true)
+            .unwrap_err()
+            .to_string();
+        assert!(complete.contains("cannot complete parent reminder"));
+        let delete = delete_reminder(&store, "PARENT", true)
+            .unwrap_err()
+            .to_string();
+        assert!(delete.contains("cannot delete parent reminder"));
         assert_eq!(store.completion_updates.get(), 0);
         assert_eq!(store.deletes.get(), 0);
     }
@@ -4784,6 +5237,7 @@ mod tests {
             title: None,
             json_file: Some(path),
             list_selector: write_selector(None),
+            parent_id: None,
             due: None,
             start: None,
             time_zone: None,
@@ -4809,6 +5263,7 @@ mod tests {
             serde_json::to_vec(&json!({
                 "title": "JSON task",
                 "list_id": "A",
+                "parent_id": "PARENT",
                 "due": "2026-07-15T09:00:00+03:00",
                 "notes": "Exact notes",
                 "priority": "high",
@@ -4819,6 +5274,10 @@ mod tests {
         )
         .unwrap();
         let store = FakeStore::new();
+        store
+            .reminders
+            .borrow_mut()
+            .push(reminder("PARENT", "Parent task", false, None));
         let output = add_reminder_from_cli(&store, json_cli_command(path.clone())).unwrap();
         fs::remove_file(&path).unwrap();
 
@@ -4827,6 +5286,7 @@ mod tests {
         };
         assert_eq!(draft.title, "JSON task");
         assert_eq!(draft.list_id, "A");
+        assert_eq!(draft.parent_id.as_deref(), Some("PARENT"));
         assert_eq!(draft.priority, ReminderPriority::High);
         assert_eq!(draft.planned_alarm_count, 1);
         assert_eq!(
@@ -4865,7 +5325,7 @@ mod tests {
             &path,
             serde_json::to_vec(&json!({
                 "version": 1,
-                "defaults": {"list_id": "A", "priority": "medium"},
+                "defaults": {"list_id": "A", "parent_id": "PARENT", "priority": "medium"},
                 "reminders": [
                     {"client_id": "one", "title": "First", "due": "2026-07-15"},
                     {
@@ -4881,6 +5341,10 @@ mod tests {
         )
         .unwrap();
         let store = FakeStore::new();
+        store
+            .reminders
+            .borrow_mut()
+            .push(reminder("PARENT", "Parent task", false, None));
         let output = reminder_batch_add(&store, &path, IfExistsArg::Error, true, false).unwrap();
         fs::remove_file(path).unwrap();
 
@@ -4894,6 +5358,12 @@ mod tests {
         };
         assert!(batch.can_write);
         assert_eq!(batch.summary.total, 2);
+        assert!(
+            batch
+                .items
+                .iter()
+                .all(|item| item.draft.as_ref().unwrap().parent_id.as_deref() == Some("PARENT"))
+        );
         assert_eq!(batch.summary.would_create, 2);
         assert_eq!(batch.items[0].client_id.as_deref(), Some("one"));
         assert_eq!(

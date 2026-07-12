@@ -652,3 +652,100 @@ fn create_read_back_clear_and_delete_advanced_reminder() {
     assert!(deleted.status.success());
     assert_eq!(json(&deleted)["type"], "reminder_deleted");
 }
+
+#[test]
+#[ignore = "manual destructive private-API test; requires explicit opt-in and an exact `icalctl Test` reminder list"]
+fn create_reparent_clear_and_delete_native_subreminder() {
+    assert_eq!(
+        std::env::var("ICALCTL_RUN_REMINDER_EVENTKIT_TESTS").as_deref(),
+        Ok("1"),
+        "set ICALCTL_RUN_REMINDER_EVENTKIT_TESTS=1 to acknowledge real Reminders writes"
+    );
+    let list_id = std::env::var("ICALCTL_TEST_REMINDER_LIST_ID")
+        .expect("set ICALCTL_TEST_REMINDER_LIST_ID to an exact `icalctl Test` reminder-list id");
+    let lists = json(&run(&["reminders", "lists", "--json"]));
+    let list = lists["lists"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|list| list["id"] == list_id)
+        .expect("ICALCTL_TEST_REMINDER_LIST_ID was not found");
+    assert_eq!(list["title"], TEST_REMINDER_LIST_TITLE);
+    assert_eq!(list["allows_modifications"], true);
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let parent_title = format!("icalctl parent integration {nonce}");
+    let parent = run(&[
+        "reminders",
+        "add",
+        &parent_title,
+        "--list-id",
+        &list_id,
+        "--if-exists",
+        "error",
+        "--json",
+    ]);
+    assert!(parent.status.success());
+    let parent_id = json(&parent)["reminder"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut parent_cleanup = ReminderCleanup {
+        id: Some(parent_id.clone()),
+    };
+
+    let child_title = format!("icalctl child integration {nonce}");
+    let child = run(&[
+        "reminders",
+        "add",
+        &child_title,
+        "--parent-id",
+        &parent_id,
+        "--if-exists",
+        "error",
+        "--json",
+    ]);
+    assert!(
+        child.status.success(),
+        "child reminder add failed: {}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let child = json(&child);
+    let child_id = child["reminder"]["id"].as_str().unwrap().to_string();
+    let mut child_cleanup = ReminderCleanup {
+        id: Some(child_id.clone()),
+    };
+    assert_eq!(child["reminder"]["parent_id"], parent_id);
+    assert_eq!(child["reminder"]["list_id"], list_id);
+
+    let shown_parent = json(&run(&["reminders", "show", &parent_id, "--json"]));
+    assert_eq!(shown_parent["reminder"]["child_count"], 1);
+    assert_eq!(shown_parent["reminder"]["child_ids"][0], child_id);
+
+    let blocked = run(&["reminders", "complete", &parent_id, "--dry-run", "--json"]);
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("direct child"));
+
+    let cleared = run(&["reminders", "update", &child_id, "--clear-parent", "--json"]);
+    assert!(cleared.status.success());
+    assert!(json(&cleared)["reminder"]["parent_id"].is_null());
+
+    let reparented = run(&[
+        "reminders",
+        "update",
+        &child_id,
+        "--parent-id",
+        &parent_id,
+        "--json",
+    ]);
+    assert!(reparented.status.success());
+    assert_eq!(json(&reparented)["reminder"]["parent_id"], parent_id);
+
+    let deleted_child = child_cleanup.delete();
+    assert!(deleted_child.status.success());
+    let deleted_parent = parent_cleanup.delete();
+    assert!(deleted_parent.status.success());
+}

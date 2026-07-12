@@ -200,6 +200,9 @@ pub struct ReminderRecurrenceReport {
 pub struct ReminderReport {
     pub id: String,
     pub title: String,
+    pub parent_id: Option<String>,
+    pub child_count: usize,
+    pub child_ids: Option<Vec<String>>,
     pub completed: bool,
     pub completion_date: Option<String>,
     pub priority: ReminderPriority,
@@ -236,6 +239,7 @@ pub struct ReminderDraftReport {
     pub operation: String,
     pub matched_reminder_id: Option<String>,
     pub title: String,
+    pub parent_id: Option<String>,
     pub list: String,
     pub list_id: String,
     pub list_source: Option<String>,

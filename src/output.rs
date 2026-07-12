@@ -164,6 +164,9 @@ fn print_reminder_dry_run(draft: &ReminderDraftReport) {
         println!("matched reminder id: {id}");
     }
     println!("title: {}", draft.title);
+    if let Some(parent_id) = &draft.parent_id {
+        println!("parent id: {parent_id}");
+    }
     println!("list: {} [{}]", draft.list, draft.list_id);
     if let Some(source) = &draft.list_source {
         if let Some(source_id) = &draft.list_source_id {
@@ -301,14 +304,22 @@ fn print_reminders(reminders: &[ReminderReport]) {
             .as_ref()
             .map(reminder_date_label)
             .unwrap_or_else(|| "undated".to_string());
+        let hierarchy = if let Some(parent_id) = &reminder.parent_id {
+            format!(" parent={parent_id}")
+        } else if reminder.child_count > 0 {
+            format!(" children={}", reminder.child_count)
+        } else {
+            String::new()
+        };
         println!(
-            "{}. {} [{}] due={} ({}) [{}]",
+            "{}. {} [{}] due={} ({}) [{}]{}",
             index + 1,
             reminder.title,
             state,
             due,
             list,
-            reminder.id
+            reminder.id,
+            hierarchy
         );
     }
 }
@@ -316,6 +327,18 @@ fn print_reminders(reminders: &[ReminderReport]) {
 fn print_reminder_detail(reminder: &ReminderReport) {
     println!("{}", reminder.title);
     println!("id: {}", reminder.id);
+    if let Some(parent_id) = &reminder.parent_id {
+        println!("parent id: {parent_id}");
+    }
+    println!("direct children: {}", reminder.child_count);
+    if let Some(child_ids) = &reminder.child_ids
+        && !child_ids.is_empty()
+    {
+        println!("child ids:");
+        for child_id in child_ids {
+            println!("- {child_id}");
+        }
+    }
     println!(
         "state: {}",
         if reminder.completed {

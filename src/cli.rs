@@ -561,6 +561,10 @@ pub enum RemindersCommand {
         #[command(flatten)]
         list_selector: WriteReminderListSelectorArgs,
 
+        /// Exact EventKit id of an existing reminder to use as the native parent.
+        #[arg(long = "parent-id", value_name = "REMINDER_ID")]
+        parent_id: Option<String>,
+
         /// Due date or datetime. Omit for an undated reminder.
         #[arg(long, value_name = "VALUE")]
         due: Option<String>,
@@ -634,6 +638,18 @@ pub enum RemindersCommand {
 
         #[command(flatten)]
         list_selector: WriteReminderListSelectorArgs,
+
+        /// Reparent under this exact EventKit reminder id.
+        #[arg(
+            long = "parent-id",
+            value_name = "REMINDER_ID",
+            conflicts_with = "clear_parent"
+        )]
+        parent_id: Option<String>,
+
+        /// Remove the reminder from its current parent.
+        #[arg(long)]
+        clear_parent: bool,
 
         /// Replace the due date or datetime.
         #[arg(long, value_name = "VALUE", conflicts_with = "clear_due")]
@@ -1950,5 +1966,65 @@ mod tests {
                 ..
             } if weekdays == [EventWeekdayArg::Monday, EventWeekdayArg::Wednesday]
         ));
+    }
+
+    #[test]
+    fn reminder_add_accepts_exact_parent_id() {
+        let cli = Cli::try_parse_from([
+            "icalctl",
+            "reminders",
+            "add",
+            "Child task",
+            "--parent-id",
+            "PARENT-ID",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Reminders {
+                command: RemindersCommand::Add {
+                    parent_id: Some(parent_id),
+                    dry_run: true,
+                    ..
+                }
+            } if parent_id == "PARENT-ID"
+        ));
+    }
+
+    #[test]
+    fn reminder_update_reparent_and_clear_parent_conflict() {
+        let reparent = Cli::try_parse_from([
+            "icalctl",
+            "reminders",
+            "update",
+            "CHILD-ID",
+            "--parent-id",
+            "PARENT-ID",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(matches!(
+            reparent.command,
+            Command::Reminders {
+                command: RemindersCommand::Update {
+                    parent_id: Some(parent_id),
+                    clear_parent: false,
+                    ..
+                }
+            } if parent_id == "PARENT-ID"
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "icalctl",
+                "reminders",
+                "update",
+                "CHILD-ID",
+                "--parent-id",
+                "PARENT-ID",
+                "--clear-parent",
+            ])
+            .is_err()
+        );
     }
 }

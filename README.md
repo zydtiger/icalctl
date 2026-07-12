@@ -645,6 +645,40 @@ as flag-based add. `client_id` is reserved for batch rows. Keep duplicate,
 dry-run, and output policy on the command. Do not combine `--json-file` with a
 positional title or individual reminder fields.
 
+### Native parent and child reminders
+
+Create a native Reminders.app subreminder by referencing an existing parent by
+its exact EventKit id:
+
+```sh
+icalctl reminders show PARENT_ID --json
+icalctl reminders add "Child task" --parent-id PARENT_ID --dry-run --json
+```
+
+When no list selector is supplied, the child uses the parent's exact list. An
+explicit list must match the parent list. `show --json` reports `parent_id`,
+`child_count`, and direct `child_ids`; list/search reports retain `parent_id`
+and `child_count` but omit the child-id collection.
+
+Reparent or detach an existing child with:
+
+```sh
+icalctl reminders update CHILD_ID --parent-id NEW_PARENT_ID --dry-run --json
+icalctl reminders update CHILD_ID --clear-parent --dry-run --json
+```
+
+The CLI rejects self-parenting, cycles, completed parents, and cross-list
+relationships. It also blocks moving, completing, or deleting a parent while
+direct children remain, because those operations could otherwise cascade in
+provider-specific ways. Reparent or remove the children first.
+
+This feature uses private ReminderKit store, save-request, and subtask-context
+APIs because public EventKit does not expose native reminder hierarchy. They
+exist on the current macOS runtime but are not an Apple compatibility contract
+and may change in a future macOS release. The bridge checks runtime availability
+and returns an error when hierarchy is unsupported. No Calendar database files
+are accessed directly.
+
 Omitting `--due` creates an undated reminder. `YYYY-MM-DD` remains a true
 date-only value. For timezone-less timed values, `--time-zone` selects the IANA
 zone; without it, the Mac local zone is used. An explicit RFC3339 offset always
@@ -677,7 +711,8 @@ do not have a deterministic notification instant. No notifications are added
 by default. The CLI computes absolute EventKit alarm times and reports both UTC
 and due-timezone values in dry-run JSON.
 
-Duplicate identity is exact list id, title, and due kind/value. The default
+Duplicate identity is exact list id, parent id, title, and due kind/value. The
+default
 policy is `--if-exists error`; `skip` returns the existing reminder and
 `update` patches only supplied non-identity fields. Timed due matching is exact
 unless `--duplicate-window-seconds` is explicitly nonzero; date-only and
@@ -756,8 +791,8 @@ Canonical `reminders.json` shape:
 }
 ```
 
-Batch defaults support list selection, timezone, priority, alarms, geofence,
-and recurrence. Rows override defaults with their own values. Every row is
+Batch defaults support list selection, parent id, timezone, priority, alarms,
+geofence, and recurrence. Rows override defaults with their own values. Every row is
 strict and must have a unique `client_id` when one is supplied. Duplicate
 resolved list/title/due identities within the file fail preflight.
 An inherited timezone applies only to timezone-less timed due/start values, so
@@ -845,10 +880,11 @@ exact reminder and target list, preview where supported, and obtain explicit
 confirmation. Update currently preserves reminder alarms and recurrence rules;
 their explicit replacement or clear options are the only exception.
 
-The adapter uses only Apple's public EventKit API. Features that Reminders.app
-does not expose publicly through EventKit—flags, tags, sections, subtasks,
-attachments, templates, and messaging triggers—are not read through private
-selectors or by editing the Calendar database.
+The reminder adapter otherwise uses Apple's public EventKit API. Native
+parent/child reminders are the sole private-framework exception and are isolated
+behind the guarded bridge described above. Flags, tags, sections, attachments,
+templates, and messaging triggers remain unsupported; `icalctl` never edits
+the Calendar database directly.
 
 ## Row Cache
 

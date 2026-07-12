@@ -427,6 +427,21 @@ icalctl reminders add "Submit report" --list-id LIST_ID \
   --due 2026-07-15 --priority high --dry-run --json
 ```
 
+For a native subreminder, inspect the exact parent first, then pass its durable
+id. If no list is supplied, the parent list is used; an explicit list must
+match it:
+
+```sh
+icalctl reminders show PARENT_ID --json
+icalctl reminders add "Child task" --parent-id PARENT_ID --dry-run --json
+```
+
+Confirm the parent title/id and target list in addition to the child fields.
+Use `reminders update CHILD_ID --parent-id NEW_PARENT_ID --dry-run --json` to
+reparent and `--clear-parent` to detach. Do not complete, move, or delete a
+parent until its direct children have been handled; the CLI blocks those
+potentially cascading mutations.
+
 Omit `--due` for an undated reminder. Date-only due/start values remain true
 date components. For timed values, precedence is explicit RFC3339 offset,
 otherwise `--time-zone`, otherwise the Mac local timezone. `--time-zone` does
@@ -455,16 +470,18 @@ Simple recurrence uses `--repeat daily|weekly|monthly|yearly`, optional
 options replace their existing collection, clear flags remove it, and omission
 preserves it.
 
-Duplicate identity is list id + title + due kind/value. `--if-exists` defaults
+Duplicate identity is list id + parent id + title + due kind/value.
+`--if-exists` defaults
 to `error`; `skip` returns the existing reminder and `update` changes only
 supplied non-identity fields. `--duplicate-window-seconds` applies only to
 timed due matching. Date-only and undated identities stay exact. No alarms are
 added unless a notification or geofence option is supplied.
 
 Structured single-reminder JSON uses the same fields and validation as add
-flags. Reminder batch JSON uses `version: 1`, optional `defaults`, and a
-`reminders` array. Defaults may provide list selection, timezone, priority,
-alarms, geofence, and recurrence. Unknown fields, duplicate client ids, and
+flags, including optional `parent_id`. Reminder batch JSON uses `version: 1`,
+optional `defaults`, and a `reminders` array. Defaults may provide list
+selection, parent id, timezone, priority, alarms, geofence, and recurrence.
+Unknown fields, duplicate client ids, and
 duplicate resolved identities fail preflight. Do not invent a second reminder
 schema or bypass the normal add pipeline.
 Inherited timezones apply only to timezone-less timed due/start values. A row
@@ -472,10 +489,13 @@ may set `time_zone`, `geofence`, or `recurrence` to `null` to clear that
 default; omission inherits it. The batch pins each write to the exact list id
 shown by preflight.
 
-Only use the public EventKit reminder surface. Do not inspect private selectors,
-use KVC for Reminders.app-only metadata, or edit the Calendar database. Flags,
-tags, sections, subtasks, attachments, templates, and messaging triggers are
-outside the public boundary.
+Use public EventKit for reminder fields except the isolated native hierarchy
+bridge. Parent/child support uses private ReminderKit store, save-request, and
+subtask-context APIs with runtime capability checks; treat it as macOS
+version-sensitive and verify live readback. Do not inspect other private
+metadata, use KVC, or edit the Calendar database. Flags, tags, sections,
+attachments, templates, and messaging triggers remain outside the supported
+boundary.
 
 Event `show` loads public recurrence rules in addition to alarms. Inspect
 `recurrence_count`, every entry in `recurrence_rules`, `is_detached`, and
