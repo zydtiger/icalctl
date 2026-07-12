@@ -8,6 +8,18 @@ use chrono::DateTime;
 
 pub fn print_human_output(output: &JsonOutput) {
     match output {
+        JsonOutput::Config { config } => {
+            if let Some(contents) = &config.contents {
+                print!("{contents}");
+                if !contents.ends_with('\n') {
+                    println!();
+                }
+            } else if let Some(value) = &config.value {
+                println!("{value}");
+            } else {
+                println!("{}: {}", config.action, config.path);
+            }
+        }
         JsonOutput::Version { version } => {
             println!("{} {}", version.name, version.version);
             println!(
@@ -179,6 +191,7 @@ fn print_reminder_dry_run(draft: &ReminderDraftReport) {
         "list selection: {}",
         match draft.list_selection {
             crate::models::ReminderListSelection::Explicit => "explicit",
+            crate::models::ReminderListSelection::ConfiguredDefault => "configured default",
             crate::models::ReminderListSelection::EventkitDefault => "EventKit default",
         }
     );
@@ -373,6 +386,7 @@ fn print_reminder_detail(reminder: &ReminderReport) {
             "list selection: {}",
             match selection {
                 crate::models::ReminderListSelection::Explicit => "explicit",
+                crate::models::ReminderListSelection::ConfiguredDefault => "configured default",
                 crate::models::ReminderListSelection::EventkitDefault => "EventKit default",
             }
         );
@@ -655,6 +669,7 @@ fn print_event_detail(event: &EventReport) {
     if let Some(selection) = event.calendar_selection {
         let selection = match selection {
             crate::models::CalendarSelection::Explicit => "explicit",
+            crate::models::CalendarSelection::ConfiguredDefault => "configured default",
             crate::models::CalendarSelection::EventkitDefault => "EventKit default",
         };
         println!("calendar selection: {selection}");

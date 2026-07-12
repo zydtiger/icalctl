@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 
 pub fn run(command: Command) -> Result<JsonOutput> {
     match command {
+        Command::Config { command } => crate::config::run(command),
         Command::Version => Ok(JsonOutput::Version {
             version: crate::version::report(),
         }),
@@ -690,9 +691,9 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
         validate_event_url(url)?;
     }
 
-    let selection = calendar_selection_for_write(&input.calendar_selector);
     let events = authorized_events_manager()?;
-    let target = resolve_target_calendar(&events, &input.calendar_selector, true)?;
+    let (target, selection) =
+        resolve_target_calendar_with_selection(&events, &input.calendar_selector, true)?;
     let availability = input.availability.map(EventAvailability::from);
     ensure_availability_supported(&target, availability)?;
 
@@ -1283,18 +1284,42 @@ pub(crate) fn resolve_target_calendar(
     args: &WriteCalendarSelectorArgs,
     allow_default: bool,
 ) -> Result<CalendarInfo> {
-    let calendar = if write_selector_is_empty(args) {
+    Ok(resolve_target_calendar_with_selection(events, args, allow_default)?.0)
+}
+
+pub(crate) fn resolve_target_calendar_with_selection(
+    events: &EventsManager,
+    args: &WriteCalendarSelectorArgs,
+    allow_default: bool,
+) -> Result<(CalendarInfo, CalendarSelection)> {
+    if write_selector_is_empty(args) {
         if !allow_default {
             bail!("a calendar selector is required");
         }
-        events
-            .default_calendar()
-            .context("no default calendar is available for new events")?
+        if let Some(calendar_id) = crate::config::default_calendar_id()? {
+            let calendars = list_calendars(events)?;
+            let ids = vec![calendar_id];
+            let calendar = require_single_writable_calendar(
+                &calendars,
+                &CalendarSelector {
+                    titles: &[],
+                    ids: &ids,
+                    source: None,
+                    source_id: None,
+                },
+            )?;
+            Ok((calendar, CalendarSelection::ConfiguredDefault))
+        } else {
+            let calendar = events
+                .default_calendar()
+                .context("no default calendar is available for new events")?;
+            Ok((calendar, CalendarSelection::EventkitDefault))
+        }
     } else {
         let calendars = list_calendars(events)?;
         let titles: Vec<String> = args.calendar.iter().cloned().collect();
         let ids: Vec<String> = args.calendar_id.iter().cloned().collect();
-        require_single_writable_calendar(
+        let calendar = require_single_writable_calendar(
             &calendars,
             &CalendarSelector {
                 titles: &titles,
@@ -1302,19 +1327,26 @@ pub(crate) fn resolve_target_calendar(
                 source: args.calendar_source.as_deref(),
                 source_id: args.source_id.as_deref(),
             },
-        )?
-    };
-
-    Ok(calendar)
+        )?;
+        Ok((calendar, CalendarSelection::Explicit))
+    }
 }
 
 fn write_selector_is_empty(args: &WriteCalendarSelectorArgs) -> bool {
     args.calendar.is_none() && args.calendar_id.is_none()
 }
 
-fn calendar_selection_for_write(args: &WriteCalendarSelectorArgs) -> CalendarSelection {
+#[cfg(test)]
+fn calendar_selection_for_write_with_config(
+    args: &WriteCalendarSelectorArgs,
+    has_configured_default: bool,
+) -> CalendarSelection {
     if write_selector_is_empty(args) {
-        CalendarSelection::EventkitDefault
+        if has_configured_default {
+            CalendarSelection::ConfiguredDefault
+        } else {
+            CalendarSelection::EventkitDefault
+        }
     } else {
         CalendarSelection::Explicit
     }
@@ -1882,12 +1914,16 @@ mod tests {
         };
 
         assert_eq!(
-            calendar_selection_for_write(&implicit),
-            CalendarSelection::EventkitDefault
+            calendar_selection_for_write_with_config(&implicit, false),
+            CalendarSelection::EventkitDefault,
         );
         assert_eq!(
-            calendar_selection_for_write(&explicit),
-            CalendarSelection::Explicit
+            calendar_selection_for_write_with_config(&implicit, true),
+            CalendarSelection::ConfiguredDefault,
+        );
+        assert_eq!(
+            calendar_selection_for_write_with_config(&explicit, true),
+            CalendarSelection::Explicit,
         );
     }
 

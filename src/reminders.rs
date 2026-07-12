@@ -1114,15 +1114,30 @@ fn add_reminder(store: &impl ReminderStore, command: AddReminderCommand) -> Resu
         .as_ref()
         .map(|parent| reminder_parent_list(&lists, parent))
         .transpose()?;
+    let configured_default_id =
+        if write_list_selector_is_empty(&command.list_selector) && parent_list.is_none() {
+            crate::config::default_reminder_list_id()?
+        } else {
+            None
+        };
     let (list, list_selection) = if write_list_selector_is_empty(&command.list_selector) {
         if let Some(parent_list) = parent_list.as_ref() {
             (parent_list.clone(), ReminderListSelection::Explicit)
         } else {
-            let default_list = store.default_list()?;
-            resolve_write_list(&lists, Some(&default_list), &command.list_selector)?
+            let default_list = if configured_default_id.is_some() {
+                None
+            } else {
+                Some(store.default_list()?)
+            };
+            resolve_write_list(
+                &lists,
+                default_list.as_ref(),
+                configured_default_id.as_deref(),
+                &command.list_selector,
+            )?
         }
     } else {
-        resolve_write_list(&lists, None, &command.list_selector)?
+        resolve_write_list(&lists, None, None, &command.list_selector)?
     };
     if let Some(parent_list) = parent_list.as_ref()
         && parent_list.id != list.id
@@ -1383,7 +1398,7 @@ fn update_reminder(
     let mut moved_list = None;
     if !write_list_selector_is_empty(&command.list_selector) {
         let lists = store.lists()?;
-        let (list, _) = resolve_write_list(&lists, None, &command.list_selector)?;
+        let (list, _) = resolve_write_list(&lists, None, None, &command.list_selector)?;
         patch.list_id = Some(list.id.clone());
         moved_list = Some(list);
     }
@@ -1948,15 +1963,32 @@ fn write_list_selector_is_empty(selector: &WriteReminderListSelectorArgs) -> boo
 fn resolve_write_list(
     lists: &[ReminderListReport],
     default_list: Option<&ReminderListReport>,
+    configured_default_id: Option<&str>,
     selector: &WriteReminderListSelectorArgs,
 ) -> Result<(ReminderListReport, ReminderListSelection)> {
     let (list, selection) = if write_list_selector_is_empty(selector) {
-        (
-            default_list
-                .cloned()
-                .context("EventKit did not return a default reminder list")?,
-            ReminderListSelection::EventkitDefault,
-        )
+        if let Some(list_id) = configured_default_id {
+            let resolved = resolve_lists(
+                lists,
+                &ReadReminderListSelectorArgs {
+                    lists: Vec::new(),
+                    list_ids: vec![list_id.to_string()],
+                    list_source: None,
+                    source_id: None,
+                },
+            )?;
+            let [list] = resolved.as_slice() else {
+                bail!("configured reminder list must resolve to exactly one list");
+            };
+            (list.clone(), ReminderListSelection::ConfiguredDefault)
+        } else {
+            (
+                default_list
+                    .cloned()
+                    .context("EventKit did not return a default reminder list")?,
+                ReminderListSelection::EventkitDefault,
+            )
+        }
     } else {
         let titles: Vec<String> = selector.list.iter().cloned().collect();
         let ids: Vec<String> = selector.list_id.iter().cloned().collect();
@@ -4312,6 +4344,43 @@ mod tests {
         assert_eq!(draft.list_id, "A");
         assert_eq!(draft.list_selection, ReminderListSelection::EventkitDefault);
         assert!(draft.due.is_none());
+    }
+
+    #[test]
+    fn configured_default_list_resolves_by_exact_id() {
+        let store = FakeStore::new();
+        let selector = write_selector(None);
+
+        let (list, selection) =
+            resolve_write_list(&store.lists, None, Some("A"), &selector).unwrap();
+
+        assert_eq!(list.id, "A");
+        assert_eq!(selection, ReminderListSelection::ConfiguredDefault);
+    }
+
+    #[test]
+    fn add_uses_configured_default_list_without_eventkit_default_lookup() {
+        let mut store = FakeStore::new();
+        store.lists.push(list("B", "Work", "iCloud", "S1"));
+        let mut command = add_command("Configured task");
+        command.list_selector = write_selector(None);
+
+        let output = crate::config::with_test_config_contents(
+            "reminder-default",
+            "config_version = 1\n[reminders]\ndefault_list_id = \"B\"\n",
+            || add_reminder(&store, command),
+        )
+        .unwrap();
+
+        let JsonOutput::ReminderDryRun { draft, .. } = output else {
+            panic!("expected reminder dry run");
+        };
+        assert_eq!(draft.list_id, "B");
+        assert_eq!(
+            draft.list_selection,
+            ReminderListSelection::ConfiguredDefault
+        );
+        assert_eq!(store.default_list_calls.get(), 0);
     }
 
     #[test]

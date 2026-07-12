@@ -60,6 +60,95 @@ icalctl version --json
 icalctl --version
 ```
 
+## Configuration
+
+Persistent configuration is stored at:
+
+```text
+~/.icalctl/config.toml
+```
+
+Create the documented configuration file, inspect it with secrets redacted,
+or open it in `$VISUAL`/`$EDITOR`:
+
+```sh
+icalctl config init
+icalctl config show
+icalctl config edit
+icalctl config validate
+```
+
+Generic dotted-key commands keep the interface small:
+
+```sh
+icalctl config get calendar.default_calendar_id
+icalctl config set calendar.default_calendar_id CALENDAR_ID
+icalctl config set reminders.default_list_id LIST_ID
+icalctl config unset reminders.default_list_id
+```
+
+Set the FlightAware key through a hidden terminal prompt so it does not enter
+shell history, or read it from standard input:
+
+```sh
+icalctl config set flightaware.api_key
+# A password manager may pipe the key to:
+# icalctl config set flightaware.api_key --stdin
+```
+
+`config show` and `config get flightaware.api_key` always redact the key. The
+directory and file are created with modes `0700` and `0600`, respectively.
+Configuration writes are atomic, and `config edit` restores the previous file
+when the edited TOML is invalid. Positional values are rejected for the API-key
+setting; use its hidden prompt or `--stdin`. Existing configuration with
+group/other permissions or different ownership is rejected with a remediation
+command instead of loading a potentially exposed secret.
+
+The default destination precedence for event and reminder creation is:
+
+```text
+explicit CLI or JSON selector
+configured exact default ID
+EventKit default
+```
+
+A configured ID is resolved and checked for writability on every add. If it is
+missing or read-only, the command fails instead of silently falling back.
+Updates without a destination selector keep their current calendar or list.
+Read commands are not filtered by these write defaults.
+
+A generated configuration contains these settings:
+
+```toml
+config_version = 1
+
+[flightaware]
+# api_key = "replace-with-your-flightaware-api-key"
+enabled = true
+monthly_result_set_limit = 900
+request_timeout_seconds = 10
+stale_if_error = true
+
+[calendar]
+# default_calendar_id = "CALENDAR-ID"
+
+[reminders]
+# default_list_id = "REMINDER-LIST-ID"
+
+[travel]
+default_range_days = 90
+calendar_ids = []
+
+[travel.server]
+bind = "127.0.0.1"
+port = 0
+open_browser = true
+
+[travel.map]
+projection = "globe"
+# style_url = "https://example.com/map-style.json"
+```
+
 `Cargo.toml`'s `[package].version` is the single semantic-version source. The
 build also embeds the current Git commit when built from a checkout, plus the
 target triple and Cargo profile. Source archives without Git metadata report an

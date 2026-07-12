@@ -326,6 +326,41 @@ documented schema-generation-1 contract.
 
 ## Commands
 
+### `config`
+
+Persistent configuration lives at `~/.icalctl/config.toml`. Initialize,
+inspect, validate, or edit it with:
+
+```sh
+icalctl config path
+icalctl config init
+icalctl config show
+icalctl config validate
+icalctl config edit
+```
+
+Use generic dotted-key operations for changes:
+
+```sh
+icalctl config set flightaware.api_key
+icalctl config set calendar.default_calendar_id CALENDAR_ID
+icalctl config set reminders.default_list_id LIST_ID
+icalctl config unset calendar.default_calendar_id
+```
+
+The API-key prompt does not echo. `--stdin` is available for secret input;
+never pass a secret as a positional argument in an agent workflow. `config
+show` and `config get flightaware.api_key` redact the secret. The config file
+uses mode `0600`, writes are atomic, and an invalid `config edit` is rolled
+back. Positional API-key values and insecure existing config permissions are
+rejected.
+
+For event and reminder adds, selection precedence is explicit CLI/JSON
+selector, configured exact default ID, then the EventKit default. Configured
+IDs are re-resolved and checked for writability; failure never silently falls
+back. Update commands without a destination selector keep the current
+calendar/list, and read commands do not inherit write defaults.
+
 ### `version`
 
 Print semantic version and build provenance without requesting EventKit
@@ -598,7 +633,7 @@ Options:
 - `<TITLE>`: required event title.
 - `--start <START>`: required start date or datetime.
 - `--end <END>`: required end date or datetime. Date-only values include the whole day.
-- `-c, --calendar <CALENDAR>`: calendar title. If omitted, EventKit uses the system default calendar for new events. Prefer choosing and confirming a calendar explicitly.
+- `-c, --calendar <CALENDAR>`: calendar title. If omitted, the configured exact default ID is used when present, otherwise EventKit's default calendar is used. Prefer choosing and confirming a calendar explicitly.
 - `--calendar-id <CALENDAR_ID>`: exact EventKit calendar id. Preferred for automation.
 - `--calendar-source <SOURCE> --calendar <CALENDAR>`: source-qualified calendar title.
 - `--source-id <SOURCE_ID> --calendar <CALENDAR>`: source-id-qualified calendar title.

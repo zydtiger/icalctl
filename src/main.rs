@@ -6,6 +6,7 @@ mod cache;
 mod calendar;
 mod calendar_selector;
 mod cli;
+mod config;
 mod dates;
 mod doctor;
 mod eventkit_bridge;

@@ -5,6 +5,9 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JsonOutput {
+    Config {
+        config: ConfigReport,
+    },
     Version {
         version: VersionReport,
     },
@@ -61,6 +64,15 @@ pub enum JsonOutput {
     Deleted {
         deleted: DeletedReport,
     },
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConfigReport {
+    pub action: String,
+    pub path: String,
+    pub key: Option<String>,
+    pub value: Option<String>,
+    pub contents: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -341,6 +353,7 @@ pub struct CalendarReport {
 #[serde(rename_all = "snake_case")]
 pub enum CalendarSelection {
     Explicit,
+    ConfiguredDefault,
     EventkitDefault,
 }
 
@@ -348,6 +361,7 @@ pub enum CalendarSelection {
 #[serde(rename_all = "snake_case")]
 pub enum ReminderListSelection {
     Explicit,
+    ConfiguredDefault,
     EventkitDefault,
 }
 
@@ -695,6 +709,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CalendarSelection::EventkitDefault).unwrap(),
             json!("eventkit_default")
+        );
+        assert_eq!(
+            serde_json::to_value(CalendarSelection::ConfiguredDefault).unwrap(),
+            json!("configured_default")
         );
     }
 

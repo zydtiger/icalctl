@@ -1,7 +1,7 @@
 use crate::calendar::{
     authorized_events_manager, availability_name, ensure_availability_supported,
     ensure_valid_event_range, parse_event_recurrence, recurrence_rules_match,
-    replace_relative_alarms, resolve_target_calendar, validate_alarm_minutes,
+    replace_relative_alarms, resolve_target_calendar_with_selection, validate_alarm_minutes,
     validate_recurring_all_day_inputs,
 };
 use crate::cli::{
@@ -297,12 +297,8 @@ fn prepare_event(
     if_exists: IfExistsArg,
 ) -> Result<PreparedEvent> {
     let selector = merged_calendar_selector(defaults, &event)?;
-    let calendar_selection = if selector.calendar.is_none() && selector.calendar_id.is_none() {
-        CalendarSelection::EventkitDefault
-    } else {
-        CalendarSelection::Explicit
-    };
-    let calendar = resolve_target_calendar(events, &selector, true)?;
+    let (calendar, calendar_selection) =
+        resolve_target_calendar_with_selection(events, &selector, true)?;
 
     let time_zone = merged_time_zone(defaults, &event.time_zone);
     if let PatchValue::Value(value) = &time_zone {

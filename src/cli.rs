@@ -44,7 +44,7 @@ pub struct ReadCalendarSelectorArgs {
 
 #[derive(Debug, Args)]
 pub struct WriteCalendarSelectorArgs {
-    /// Calendar title. Add defaults to EventKit's default; update keeps the current calendar.
+    /// Calendar title. Add uses the configured or EventKit default; update keeps the current calendar.
     #[arg(short, long)]
     pub calendar: Option<String>,
 
@@ -89,7 +89,7 @@ pub struct ReadReminderListSelectorArgs {
 
 #[derive(Clone, Debug, Args)]
 pub struct WriteReminderListSelectorArgs {
-    /// Reminder list title. Add defaults to EventKit's default; update keeps the current list.
+    /// Reminder list title. Add uses the configured or EventKit default; update keeps the current list.
     #[arg(short = 'l', long = "list")]
     pub list: Option<String>,
 
@@ -232,6 +232,12 @@ impl From<EventJsonRecurrence> for EventRecurrenceArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Inspect and change persistent icalctl configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+
     /// Print semantic version and build provenance.
     Version,
 
@@ -506,6 +512,40 @@ pub enum Command {
     Completions {
         /// Shell to generate completions for.
         shell: Shell,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Print the configuration file path.
+    Path,
+    /// Create a documented configuration file with safe defaults.
+    Init,
+    /// Print the effective configuration with secrets redacted.
+    Show,
+    /// Validate the configuration file.
+    Validate,
+    /// Open the configuration file in $VISUAL or $EDITOR.
+    Edit,
+    /// Print one effective configuration value.
+    Get {
+        /// Dotted configuration key, for example calendar.default_calendar_id.
+        key: String,
+    },
+    /// Set one configuration value.
+    Set {
+        /// Dotted configuration key, for example calendar.default_calendar_id.
+        key: String,
+        /// New value. Omit to be prompted; arrays use TOML syntax.
+        value: Option<String>,
+        /// Read the value from standard input.
+        #[arg(long, conflicts_with = "value")]
+        stdin: bool,
+    },
+    /// Remove one configuration value so its built-in default applies.
+    Unset {
+        /// Dotted configuration key.
+        key: String,
     },
 }
 
@@ -967,6 +1007,47 @@ mod tests {
         let cli = Cli::try_parse_from(["icalctl", "version"]).unwrap();
 
         assert!(matches!(cli.command, Command::Version));
+    }
+
+    #[test]
+    fn config_commands_are_small_and_generic() {
+        assert!(matches!(
+            Cli::try_parse_from(["icalctl", "config", "show"])
+                .unwrap()
+                .command,
+            Command::Config {
+                command: ConfigCommand::Show
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "icalctl",
+                "config",
+                "set",
+                "calendar.default_calendar_id",
+                "CAL-1"
+            ])
+            .unwrap()
+            .command,
+            Command::Config {
+                command: ConfigCommand::Set {
+                    key,
+                    value: Some(value),
+                    stdin: false,
+                }
+            } if key == "calendar.default_calendar_id" && value == "CAL-1"
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "icalctl",
+                "config",
+                "set",
+                "flightaware.api_key",
+                "secret",
+                "--stdin"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
