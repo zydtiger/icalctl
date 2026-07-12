@@ -10,6 +10,7 @@ mod config;
 mod dates;
 mod doctor;
 mod eventkit_bridge;
+pub mod flightaware;
 mod models;
 mod output;
 mod reminders;

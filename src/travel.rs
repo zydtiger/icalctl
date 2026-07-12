@@ -1,3 +1,4 @@
+use crate::flightaware::FlightStatus;
 use crate::models::EventReport;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, FixedOffset, Utc};
@@ -65,6 +66,7 @@ pub struct TravelLeg {
     pub arrival_airport: TravelAirport,
     pub departure: TravelMoment,
     pub arrival: TravelMoment,
+    pub live_status: Option<FlightStatus>,
     pub source: TravelEventSource,
 }
 
@@ -288,6 +290,7 @@ fn travel_leg_from_event(event: &EventReport) -> Result<(TravelLeg, Vec<TravelWa
                     .to_rfc3339(),
                 utc: event_end.with_timezone(&Utc).to_rfc3339(),
             },
+            live_status: None,
             source: TravelEventSource {
                 event_id: event.id.clone(),
                 occurrence_date: event.occurrence_date.clone(),

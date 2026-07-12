@@ -208,18 +208,19 @@ fn reminder_cache_path() -> Result<PathBuf> {
 }
 
 fn cache_file_path(file_name: &str) -> Result<PathBuf> {
+    Ok(cache_directory()?.join(file_name))
+}
+
+pub(crate) fn cache_directory() -> Result<PathBuf> {
     if let Some(xdg_cache_home) = std::env::var_os("XDG_CACHE_HOME") {
-        return Ok(PathBuf::from(xdg_cache_home)
-            .join("icalctl")
-            .join(file_name));
+        return Ok(PathBuf::from(xdg_cache_home).join("icalctl"));
     }
 
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
     Ok(PathBuf::from(home)
         .join("Library")
         .join("Caches")
-        .join("icalctl")
-        .join(file_name))
+        .join("icalctl"))
 }
 
 #[cfg(test)]
