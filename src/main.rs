@@ -13,7 +13,7 @@ mod eventkit_bridge;
 mod models;
 mod output;
 mod reminders;
-mod travel;
+pub mod travel;
 mod version;
 
 use anyhow::{Context, Result};

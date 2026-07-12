@@ -1675,7 +1675,7 @@ fn fetch_range(
     fetch_events(start, end, selector)
 }
 
-fn fetch_events(
+pub(crate) fn fetch_events(
     start: DateTime<Local>,
     end: DateTime<Local>,
     selector: &ReadCalendarSelectorArgs,
