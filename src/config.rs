@@ -14,6 +14,7 @@ use toml_edit::{DocumentMut, Item, Value, value};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 const CONFIG_VERSION: u8 = 1;
+pub const MAX_TRAVEL_RANGE_DAYS: u32 = 366;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const REDACTED: &str = "********";
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -44,6 +45,7 @@ stale_if_error = true
 # default_list_id = "REMINDER-LIST-ID"
 
 [travel]
+# Inclusive upcoming window used by travel serve (maximum 366 days).
 default_range_days = 90
 calendar_ids = []
 
@@ -54,7 +56,9 @@ open_browser = true
 
 [travel.map]
 projection = "globe"
-# style_url = "https://example.com/map-style.json"
+# Optional public/keyless MapLibre style URL.
+# Defaults to the OpenFreeMap Bright street style.
+# style_url = "https://tiles.openfreemap.org/styles/bright"
 "#;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -487,6 +491,9 @@ fn validate(config: &Config) -> Result<()> {
     }
     if config.travel.default_range_days == 0 {
         bail!("travel.default_range_days must be greater than zero");
+    }
+    if config.travel.default_range_days > MAX_TRAVEL_RANGE_DAYS {
+        bail!("travel.default_range_days must not exceed {MAX_TRAVEL_RANGE_DAYS} inclusive days");
     }
     if config
         .travel
@@ -958,6 +965,13 @@ mod tests {
     fn non_loopback_server_bind_is_rejected() {
         let mut config = Config::default();
         config.travel.server.bind = "0.0.0.0".to_string();
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn oversized_default_travel_range_is_rejected() {
+        let mut config = Config::default();
+        config.travel.default_range_days = MAX_TRAVEL_RANGE_DAYS + 1;
         assert!(validate(&config).is_err());
     }
 

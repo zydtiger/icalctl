@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>icalctl travel</title>
+    <link rel="stylesheet" href="/assets/vendor/maplibre-gl/maplibre-gl.css">
+    <link rel="stylesheet" href="/assets/app.css">
+    <script defer src="/assets/vendor/maplibre-gl/maplibre-gl-csp.js"></script>
+    <script defer src="/assets/app.js"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand" aria-label="icalctl travel">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>
+            <strong>icalctl</strong>
+            <small>travel atlas</small>
+          </span>
+        </div>
+
+        <form id="range-form" class="range-form" novalidate>
+          <label>
+            <span>Start</span>
+            <input id="start-date" name="start" type="date" required>
+          </label>
+          <span class="range-arrow" aria-hidden="true">→</span>
+          <label>
+            <span>End</span>
+            <input id="end-date" name="end" type="date" required>
+          </label>
+          <button id="refresh-button" class="refresh-button" type="submit">
+            <span>Refresh</span>
+          </button>
+        </form>
+
+        <div class="view-switch" role="group" aria-label="Map projection">
+          <button type="button" data-projection="mercator" aria-pressed="false">Map</button>
+          <button type="button" data-projection="globe" aria-pressed="true">Globe</button>
+        </div>
+      </header>
+
+      <p id="form-error" class="form-error" role="alert" hidden></p>
+
+      <main class="workspace">
+        <section class="map-panel" aria-label="Flight route map">
+          <div id="map" role="application" aria-label="Interactive travel map"></div>
+          <div class="map-shade" aria-hidden="true"></div>
+          <div id="map-message" class="map-message" role="status">
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Preparing map…</span>
+          </div>
+          <div class="map-legend" aria-hidden="true">
+            <span><i class="departure-dot"></i>Departure</span>
+            <span><i class="arrival-dot"></i>Arrival</span>
+          </div>
+        </section>
+
+        <aside class="itinerary-panel" aria-label="Travel itinerary">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Upcoming itinerary</p>
+              <h1 id="trip-heading">Flights</h1>
+            </div>
+            <span id="trip-count" class="trip-count">—</span>
+          </div>
+
+          <div id="request-status" class="request-status" role="status" aria-live="polite">
+            Loading Calendar itinerary…
+          </div>
+
+          <section id="trip-selector" class="trip-selector" aria-labelledby="trip-selector-heading" hidden>
+            <div class="selector-heading">
+              <h2 id="trip-selector-heading">Itinerary</h2>
+              <span>Choose a leg</span>
+            </div>
+            <ol id="trip-list" class="trip-list" aria-label="Flights in chronological order"></ol>
+          </section>
+
+          <section id="warning-panel" class="warning-panel" aria-labelledby="warning-heading" hidden>
+            <h2 id="warning-heading">Data notes</h2>
+            <ul id="warning-list"></ul>
+          </section>
+
+          <section id="detail-panel" class="detail-panel" aria-labelledby="detail-heading" hidden>
+            <p class="eyebrow">Selected leg</p>
+            <h2 id="detail-heading"></h2>
+            <div id="detail-content" tabindex="0" aria-label="Selected leg details"></div>
+          </section>
+
+          <div id="empty-state" class="empty-state" hidden>
+            <div class="empty-orbit" aria-hidden="true"><i></i></div>
+            <h2>No canonical flights found</h2>
+            <p>Try a wider date range or check the event notes created by <code>icalctl travel flight</code>.</p>
+          </div>
+
+          <footer class="panel-footer">
+            <span id="generated-at">Calendar data not loaded</span>
+            <span>Read-only</span>
+          </footer>
+        </aside>
+      </main>
+    </div>
+  </body>
+</html>

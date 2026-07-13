@@ -136,6 +136,7 @@ stale_if_error = true
 # default_list_id = "REMINDER-LIST-ID"
 
 [travel]
+# Inclusive upcoming window used by travel serve (maximum 366 days).
 default_range_days = 90
 calendar_ids = []
 
@@ -146,7 +147,9 @@ open_browser = true
 
 [travel.map]
 projection = "globe"
-# style_url = "https://example.com/map-style.json"
+# Optional public/keyless MapLibre style URL.
+# Defaults to the OpenFreeMap Bright street style.
+# style_url = "https://tiles.openfreemap.org/styles/bright"
 ```
 
 `Cargo.toml`'s `[package].version` is the single semantic-version source. The
@@ -597,8 +600,9 @@ Arrival: HEL 2026-07-11T14:00:00+03:00
 
 Use `--notes` or `--notes-file` for extra text appended after one blank line.
 The helper also accepts existing calendar selectors, URL, availability, alarm,
-duplicate-policy, duplicate-window, and dry-run flags. It does not fetch
-airline data, status, gates, terminals, bookings, delays, or airport metadata.
+duplicate-policy, duplicate-window, and dry-run flags. Event creation itself
+does not call an airline provider. The separate read-only visualization can
+resolve bundled airport metadata and optionally enrich those canonical events.
 
 The equivalent generic invocation is:
 
@@ -645,6 +649,75 @@ travel schema. This is the canonical recipe:
   ]
 }
 ```
+
+## Read-only travel visualization
+
+Start the local MapLibre travel atlas with:
+
+```sh
+icalctl travel serve
+# Restrict reads to one or more exact EventKit ids when needed:
+icalctl travel serve --calendar-id CALENDAR_ID --calendar-id ANOTHER_ID
+```
+
+The command binds only to the configured loopback address, prints a
+per-launch capability URL, opens it when `travel.server.open_browser` is true,
+and performs no Calendar writes. The launch token is exchanged for an
+HttpOnly, SameSite cookie and removed from the visible URL. Exact Host,
+same-origin, and browser fetch-site checks run before any Calendar or provider
+read. Keep the printed launch URL private while that server process is alive.
+
+The interface and MapLibre GL JS 5.24.0 CSP build are bundled into the binary;
+there is no frontend install or build step. It shows all canonical flight legs
+chronologically, renders airport markers and great-circle route arcs, and keeps
+the itinerary usable when a basemap, airport coordinate, or provider update is
+unavailable. Map/globe switching only changes the existing MapLibre projection
+and does not reread Calendar. Calendar/provider text is inserted through DOM
+text nodes rather than HTML strings.
+
+The initial view starts at the current instant and spans
+`travel.default_range_days` inclusive calendar days (90 by default). The date
+controls accept an explicit inclusive `start` and `end`; explicit ranges include
+the whole start and end days and are limited to 366 days. Refreshing the range
+updates the map and list without restarting the server.
+
+The authenticated same-origin endpoint is:
+
+```text
+GET /api/travel
+GET /api/travel?start=2026-07-01&end=2026-09-30
+```
+
+It returns the exact normalized data used by the page: scheduled local strings
+with offsets, UTC instants, airport metadata, source EventKit identity,
+warnings, and optional normalized FlightAware status/freshness. Free-form text
+after the canonical flight-note block is never returned. The Calendar schedule
+remains authoritative.
+
+When `flightaware.enabled` is true and `flightaware.api_key` is configured,
+the server deterministically matches the flight number/codeshare, route, and
+departure time before applying live status, estimates/actuals, gates,
+terminals, delays, diversion/tracking state, and available current position.
+Provider failures, ambiguity, cache problems, or quota exhaustion become
+explicit warnings and leave the Calendar-only leg intact. There is no provider
+or API-key CLI flag. Normalized entries, backoff, and the monthly result-set
+ledger live at:
+
+```text
+~/Library/Caches/icalctl/flightaware/
+```
+
+`XDG_CACHE_HOME` overrides the macOS cache root when it is set. The API key and
+raw FlightAware payloads are never stored in this cache or returned to the
+browser.
+
+The default keyless basemap is OpenFreeMap's Bright street style, rendered by
+the bundled MapLibre client with its required attribution. Override
+`travel.map.style_url` for another MapLibre style/source and set
+`travel.map.projection` to `map` or `globe`. The style URL is sent to the local
+browser, so do not put a secret token in it; use a public/keyless style URL or a
+locally served style. Vendored MapLibre notices are under
+`assets/web/vendor/maplibre-gl/`.
 
 ## Apple Reminders
 
@@ -1225,10 +1298,26 @@ Common checks:
 ```sh
 cargo fmt --check
 cargo check
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build
+node --check assets/web/app.js
 ```
+
+The optional browser interaction suite requires Node 18+ and a Playwright
+Chromium install:
+
+```sh
+npm ci
+npx playwright install chromium
+npm run test:browser
+```
+
+It starts `icalctl travel serve` with an isolated temporary configuration,
+intercepts the travel JSON with deterministic multi-leg/unknown-airport/XSS
+fixtures, and verifies MapLibre initialization, chronological cards, selection,
+responsive layout, inclusive range refresh, and projection switching without a
+second Calendar request. It performs no Calendar writes or FlightAware calls.
 
 Install locally:
 
@@ -1307,7 +1396,11 @@ Main modules:
 - `src/output.rs`: human-readable formatting
 - `src/reminders.rs`: testable read service, list selectors, filters, and
   public-only EventKit reminder bridge
-- `src/travel.rs`: pure deterministic flight-to-event formatting
+- `src/travel.rs`: canonical flight formatting/parsing and airport metadata
+- `src/flightaware.rs`: deterministic provider matching, normalized cache,
+  quota ledger, and adaptive backoff
+- `src/travel_server.rs`: capability-protected loopback JSON/UI server
+- `assets/web/`: bundled MapLibre travel interface and vendored CSP assets
 - `tests/eventkit_manual.rs`: opt-in real EventKit verification with strict safeguards
 
 `eventkit-rs` remains the high-level event wrapper. Reminders use generated

@@ -722,7 +722,42 @@ with no alarms, and deliberately stores no single EventKit timezone. Extra
 All ordinary calendar selectors, URL, availability, alarm, duplicate, and
 dry-run safeguards still apply. One invocation represents one leg. Use the
 documented generic batch JSON recipe for multi-leg itineraries; there is no
-travel-specific batch schema or airline-data lookup.
+travel-specific batch schema. Event creation does not call an airline provider.
+
+### `travel serve`
+
+Serve the read-only local travel atlas:
+
+```sh
+icalctl travel serve
+icalctl travel serve --calendar-id EXACT_EVENTKIT_ID
+```
+
+This command reads future canonical `travel flight` events through EventKit,
+serves the bundled MapLibre interface on a loopback address, and never mutates
+Calendar. No write confirmation is needed. When filtering, first verify exact
+ids with `icalctl calendars --json`; repeat `--calendar-id` for multiple
+calendars. If no CLI ids are supplied, `travel.calendar_ids` applies, and an
+empty configured list reads all calendars.
+
+The printed URL contains a random per-launch capability that remains valid
+until that server process stops and establishes a protected local browser
+session. Do not share or record that URL. The default request starts at the
+current instant for the configured upcoming window. The page's date controls
+use inclusive date-only bounds and allow at most 366 days.
+
+FlightAware is optional and fail-open. It uses only
+`flightaware.api_key` from `~/.icalctl/config.toml`; never ask for or pass an API
+key on the command line. Missing keys, provider failures, ambiguous matches,
+backoff, or quota exhaustion leave Calendar-only legs with warnings. Normalized
+provider cache and usage state normally live under
+`~/Library/Caches/icalctl/flightaware/` (`XDG_CACHE_HOME` overrides the cache
+root). The key and raw provider responses must never be surfaced or persisted.
+
+Map/globe switching reuses the current response. The default basemap is
+OpenFreeMap's Bright street style. `travel.map.style_url` is sent to the local
+browser, so it must not contain secrets. Unknown airports and provider warnings
+remain visible without dropping an otherwise valid leg.
 
 ### `update`
 

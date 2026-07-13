@@ -225,6 +225,9 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             }),
         },
         Command::Travel { command } => match command {
+            TravelCommand::Serve { .. } => {
+                unreachable!("travel serve is handled before calendar command dispatch")
+            }
             TravelCommand::Flight {
                 flight_number,
                 from_airport,
@@ -1675,7 +1678,7 @@ fn fetch_range(
     fetch_events(start, end, selector)
 }
 
-fn fetch_events(
+pub(crate) fn fetch_events(
     start: DateTime<Local>,
     end: DateTime<Local>,
     selector: &ReadCalendarSelectorArgs,
