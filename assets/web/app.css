@@ -505,27 +505,35 @@ button {
 
 .timing-groups {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
   margin-bottom: 12px;
 }
 
 .timing-group {
   min-width: 0;
-  padding: 9px 10px;
+  padding: 10px 11px;
   border: 1px solid var(--line);
+  border-left-width: 2px;
   border-radius: 9px;
   background: #0d1418;
 }
 
+.timing-group[data-endpoint="departure"] {
+  border-left-color: var(--amber);
+}
+
+.timing-group[data-endpoint="arrival"] {
+  border-left-color: var(--cyan);
+}
+
 .timing-heading {
   margin: 0 0 6px;
-  color: var(--cyan);
-  font-size: 9px;
+  color: var(--ink);
+  font-size: 10px;
   font-weight: 750;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.025em;
   line-height: 1.35;
-  text-transform: uppercase;
 }
 
 .timing-date {
@@ -533,15 +541,31 @@ button {
 }
 
 .timing-line {
+  display: grid;
+  grid-template-columns: 47px minmax(0, 1fr);
+  gap: 6px;
   margin: 2px 0 0;
-  overflow-wrap: anywhere;
   color: #dce1e2;
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   line-height: 1.4;
 }
 
 .timing-kind {
   color: var(--dim);
+}
+
+.timing-line.single .timing-reading {
+  grid-column: 1 / -1;
+}
+
+.timing-reading {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.timing-delay {
+  white-space: nowrap;
 }
 
 .timing-delay.late {
@@ -854,6 +878,15 @@ button {
     padding: 10px 11px;
   }
 
+  .timing-groups {
+    gap: 6px;
+    margin-bottom: 9px;
+  }
+
+  .timing-group {
+    padding: 7px 9px;
+  }
+
   .panel-footer {
     display: none;
   }
@@ -967,6 +1000,14 @@ button {
   .itinerary-panel {
     padding-right: 12px;
     padding-left: 12px;
+  }
+
+  .timing-group {
+    padding: 9px 10px;
+  }
+
+  .timing-line {
+    grid-template-columns: 46px minmax(0, 1fr);
   }
 
   .map-legend {

@@ -410,6 +410,58 @@ test("consolidates booked and provider timing details", async ({page}) => {
   await expect(timingGroup("arrival")).toContainText("Updated 17:19 (+02:00) · 9 min late");
   await expect(timingGroup("arrival")).not.toContainText("17:14 (+02:00)");
 
+  await page.setViewportSize({width: 1280, height: 720});
+  const desktopTimingLayout = await page.evaluate(() => {
+    const content = document.querySelector("#detail-content");
+    const departure = document.querySelector('.timing-group[data-endpoint="departure"]');
+    const arrival = document.querySelector('.timing-group[data-endpoint="arrival"]');
+    const departureBounds = departure.getBoundingClientRect();
+    const arrivalBounds = arrival.getBoundingClientRect();
+    return {
+      contentClientWidth: content.clientWidth,
+      contentScrollWidth: content.scrollWidth,
+      verticallyOrdered: departureBounds.bottom <= arrivalBounds.top,
+      equalWidths: Math.abs(departureBounds.width - arrivalBounds.width) <= 1,
+    };
+  });
+  expect(desktopTimingLayout.contentScrollWidth).toBeLessThanOrEqual(
+    desktopTimingLayout.contentClientWidth + 1,
+  );
+  expect(desktopTimingLayout.verticallyOrdered).toBe(true);
+  expect(desktopTimingLayout.equalWidths).toBe(true);
+
+  await page.setViewportSize({width: 360, height: 740});
+  const mobileTimingLayout = await page.evaluate(() => {
+    const documentElement = document.documentElement;
+    const content = document.querySelector("#detail-content");
+    const contentBounds = content.getBoundingClientRect();
+    const groups = [...document.querySelectorAll(".timing-group")].map((group) => {
+      const bounds = group.getBoundingClientRect();
+      return {left: bounds.left, right: bounds.right};
+    });
+    return {
+      documentClientWidth: documentElement.clientWidth,
+      documentScrollWidth: documentElement.scrollWidth,
+      contentClientWidth: content.clientWidth,
+      contentScrollWidth: content.scrollWidth,
+      groupsInsideContent: groups.every(
+        (bounds) =>
+          bounds.left >= contentBounds.left - 1 && bounds.right <= contentBounds.right + 1,
+      ),
+    };
+  });
+  expect(mobileTimingLayout.documentScrollWidth).toBeLessThanOrEqual(
+    mobileTimingLayout.documentClientWidth + 1,
+  );
+  expect(mobileTimingLayout.contentScrollWidth).toBeLessThanOrEqual(
+    mobileTimingLayout.contentClientWidth + 1,
+  );
+  expect(mobileTimingLayout.groupsInsideContent).toBe(true);
+  await expect(timingGroup("departure")).toContainText(
+    "Updated 16:07 (+02:00) · 7 min late",
+  );
+  await expect(timingGroup("arrival")).toContainText("Updated 17:19 (+02:00) · 9 min late");
+
   for (const obsoleteLabel of [
     "Calendar id",
     "Live status",

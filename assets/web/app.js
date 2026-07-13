@@ -435,24 +435,27 @@ function buildTimingGroup(label, endpoint, schedule, live) {
 
 function buildTimingLine(kind, value, delaySeconds) {
   const line = document.createElement("p");
-  line.className = "timing-line";
+  line.className = `timing-line${kind ? "" : " single"}`;
   if (kind) {
     const label = document.createElement("span");
     label.className = "timing-kind";
-    label.textContent = kind;
-    line.append(label, document.createTextNode(" "));
+    label.textContent = `${kind} `;
+    line.append(label);
   }
+  const reading = document.createElement("span");
+  reading.className = "timing-reading";
   const time = document.createElement("span");
   time.className = "timing-value";
   time.textContent = value;
-  line.append(time);
+  reading.append(time);
   if (delaySeconds !== null) {
     const delay = document.createElement("span");
     const delayState = delaySeconds > 0 ? "late" : delaySeconds < 0 ? "early" : "on-time";
     delay.className = `timing-delay ${delayState}`;
     delay.textContent = delayDescription(delaySeconds);
-    line.append(document.createTextNode(" · "), delay);
+    reading.append(document.createTextNode(" · "), delay);
   }
+  line.append(reading);
   return line;
 }
 
