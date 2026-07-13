@@ -231,7 +231,7 @@ fn enrich_with(
 
         let response = transport.get(
             ProviderRequest::Flights {
-                ident: leg.flight_number.clone(),
+                ident: normalize_ident(&leg.flight_number),
                 start,
                 end,
             },
@@ -1600,6 +1600,38 @@ mod tests {
             selection,
             MatchSelection::Matched(flight) if flight.fa_flight_id == "FA-HO1607"
         ));
+    }
+
+    #[test]
+    fn provider_queries_compact_spaced_flight_numbers() {
+        let directory = TestDirectory::new();
+        let transport = FakeTransport::new(vec![Ok(flights_response(vec![scheduled_flight()]))]);
+        let mut travel = collection(vec![leg(
+            "event-1",
+            "HO 1607",
+            "2026-07-11T01:25:00Z",
+            "2026-07-11T11:00:00Z",
+        )]);
+
+        enrich_with(
+            &config(10, true),
+            &mut travel,
+            &transport,
+            directory.path(),
+            now(),
+            "TEST-API-KEY",
+        );
+
+        assert_eq!(travel.legs[0].flight_number, "HO 1607");
+        assert_eq!(transport.request_count(), 1);
+        match &transport.requests.borrow()[0] {
+            ProviderRequest::Flights { ident, .. } => assert_eq!(ident, "HO1607"),
+            ProviderRequest::Position { .. } => panic!("expected a flight summary request"),
+        }
+        assert_eq!(
+            travel.legs[0].live_status.as_ref().unwrap().status,
+            "scheduled"
+        );
     }
 
     #[test]
