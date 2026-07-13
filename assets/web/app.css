@@ -52,6 +52,7 @@ button {
 }
 
 .topbar {
+  grid-row: 1;
   z-index: 10;
   display: grid;
   grid-template-columns: minmax(170px, 1fr) auto minmax(170px, 1fr);
@@ -222,6 +223,7 @@ button {
 }
 
 .form-error {
+  grid-row: 2;
   z-index: 12;
   margin: 0;
   padding: 9px 20px;
@@ -233,6 +235,7 @@ button {
 }
 
 .workspace {
+  grid-row: 3;
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(340px, 420px);

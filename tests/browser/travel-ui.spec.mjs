@@ -97,6 +97,11 @@ test("renders, filters, selects, and switches projection without refetching", as
 
   await page.goto(serverInfo.url, {waitUntil: "domcontentloaded"});
   await expect(page).toHaveURL(new RegExp(`^http://127\\.0\\.0\\.1:${serverInfo.port}/$`));
+  await expect(page.locator("#form-error")).toBeHidden();
+  const workspaceBounds = await page.locator(".workspace").boundingBox();
+  const viewportHeight = await page.evaluate(() => window.innerHeight);
+  expect(workspaceBounds).not.toBeNull();
+  expect(Math.abs(workspaceBounds.y + workspaceBounds.height - viewportHeight)).toBeLessThanOrEqual(1);
   await expect(page.locator(".trip-card")).toHaveCount(4);
   await expect(page.locator("#trip-count")).toHaveText("4");
   await expect(page.locator(".trip-card").nth(0)).toContainText("HO1607");
