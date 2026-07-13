@@ -71,6 +71,14 @@
             Loading Calendar itinerary…
           </div>
 
+          <section id="trip-selector" class="trip-selector" aria-labelledby="trip-selector-heading" hidden>
+            <div class="selector-heading">
+              <h2 id="trip-selector-heading">Itinerary</h2>
+              <span>Choose a leg</span>
+            </div>
+            <ol id="trip-list" class="trip-list" aria-label="Flights in chronological order"></ol>
+          </section>
+
           <section id="warning-panel" class="warning-panel" aria-labelledby="warning-heading" hidden>
             <h2 id="warning-heading">Data notes</h2>
             <ul id="warning-list"></ul>
@@ -79,7 +87,7 @@
           <section id="detail-panel" class="detail-panel" aria-labelledby="detail-heading" hidden>
             <p class="eyebrow">Selected leg</p>
             <h2 id="detail-heading"></h2>
-            <div id="detail-content"></div>
+            <div id="detail-content" tabindex="0" aria-label="Selected leg details"></div>
           </section>
 
           <div id="empty-state" class="empty-state" hidden>
@@ -87,8 +95,6 @@
             <h2>No canonical flights found</h2>
             <p>Try a wider date range or check the event notes created by <code>icalctl travel flight</code>.</p>
           </div>
-
-          <ol id="trip-list" class="trip-list" aria-label="Flights in chronological order"></ol>
 
           <footer class="panel-footer">
             <span id="generated-at">Calendar data not loaded</span>

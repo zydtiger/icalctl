@@ -45,6 +45,7 @@ function initialize() {
     "form-error",
     "map-message",
     "request-status",
+    "trip-selector",
     "warning-panel",
     "warning-list",
     "detail-panel",
@@ -191,7 +192,7 @@ function renderAll(previousSelection) {
   renderTripList(legs);
   elements["trip-count"].textContent = String(legs.length);
   elements["empty-state"].hidden = legs.length !== 0;
-  elements["trip-list"].hidden = legs.length === 0;
+  elements["trip-selector"].hidden = legs.length === 0;
 
   if (legs.length === 0) {
     state.selectedIndex = null;
@@ -201,7 +202,7 @@ function renderAll(previousSelection) {
       ? legs.findIndex((leg) => legIdentity(leg) === previousSelection)
       : -1;
     state.selectedIndex = retainedIndex >= 0 ? retainedIndex : 0;
-    updateSelection(false);
+    updateSelection(false, false);
   }
   renderMapData();
 }
@@ -287,12 +288,20 @@ function selectLeg(index, moveMap) {
     return;
   }
   state.selectedIndex = index;
-  updateSelection(moveMap);
+  updateSelection(moveMap, true);
 }
 
-function updateSelection(moveMap) {
+function updateSelection(moveMap, revealCard) {
+  let selectedCard = null;
   for (const card of document.querySelectorAll(".trip-card")) {
-    card.setAttribute("aria-current", String(Number(card.dataset.legIndex) === state.selectedIndex));
+    const selected = Number(card.dataset.legIndex) === state.selectedIndex;
+    card.setAttribute("aria-current", String(selected));
+    if (selected) {
+      selectedCard = card;
+    }
+  }
+  if (revealCard) {
+    revealSelectedCard(selectedCard);
   }
   document.body.dataset.selectedLeg = state.selectedIndex === null ? "" : String(state.selectedIndex);
   renderDetails();
@@ -305,6 +314,24 @@ function updateSelection(moveMap) {
       const midpoint = greatCircle(coordinates[0], coordinates[1], 24)[12];
       state.map.easeTo({center: midpoint, duration: 550});
     }
+  }
+}
+
+function revealSelectedCard(card) {
+  const list = elements["trip-list"];
+  if (!card) {
+    return;
+  }
+  const listBounds = list.getBoundingClientRect();
+  const cardBounds = card.getBoundingClientRect();
+  if (list.scrollHeight > list.clientHeight + 1) {
+    if (cardBounds.top < listBounds.top) {
+      list.scrollTop -= listBounds.top - cardBounds.top;
+    } else if (cardBounds.bottom > listBounds.bottom) {
+      list.scrollTop += cardBounds.bottom - listBounds.bottom;
+    }
+  } else if (cardBounds.top < 0 || cardBounds.bottom > window.innerHeight) {
+    card.scrollIntoView({block: "nearest", inline: "nearest"});
   }
 }
 
@@ -354,6 +381,7 @@ function renderDetails() {
   }
 
   elements["detail-content"].replaceChildren(list);
+  elements["detail-content"].scrollTop = 0;
   elements["detail-panel"].hidden = false;
 }
 

@@ -104,6 +104,30 @@ test("renders, filters, selects, and switches projection without refetching", as
   expect(Math.abs(workspaceBounds.y + workspaceBounds.height - viewportHeight)).toBeLessThanOrEqual(1);
   await expect(page.locator(".trip-card")).toHaveCount(4);
   await expect(page.locator("#trip-count")).toHaveText("4");
+  const panelLayout = await page.evaluate(() => {
+    const bounds = (selector) => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return {top: rect.top, bottom: rect.bottom, height: rect.height};
+    };
+    const tripList = document.querySelector("#trip-list");
+    const detailContent = document.querySelector("#detail-content");
+    return {
+      selector: bounds("#trip-selector"),
+      warning: bounds("#warning-panel"),
+      detail: bounds("#detail-panel"),
+      tripList: {clientHeight: tripList.clientHeight, scrollHeight: tripList.scrollHeight},
+      detailContent: {
+        clientHeight: detailContent.clientHeight,
+        scrollHeight: detailContent.scrollHeight,
+      },
+    };
+  });
+  expect(panelLayout.selector.bottom).toBeLessThanOrEqual(panelLayout.warning.top);
+  expect(panelLayout.warning.bottom).toBeLessThanOrEqual(panelLayout.detail.top);
+  expect(panelLayout.tripList.clientHeight).toBeGreaterThanOrEqual(100);
+  expect(panelLayout.tripList.scrollHeight).toBeGreaterThan(panelLayout.tripList.clientHeight);
+  expect(panelLayout.detailContent.clientHeight).toBeGreaterThanOrEqual(60);
+  expect(panelLayout.detailContent.scrollHeight).toBeGreaterThan(panelLayout.detailContent.clientHeight);
   await expect(page.locator(".trip-card").nth(0)).toContainText("D83229");
   await expect(page.locator(".trip-card").nth(1)).toContainText("AY1415");
   await expect(page.locator(".trip-card").nth(2)).toContainText("XX9");
@@ -130,6 +154,21 @@ test("renders, filters, selects, and switches projection without refetching", as
   await expect(page.locator("body")).toHaveAttribute("data-route-count", "3");
   await expect(page.locator(".maplibregl-canvas")).toBeVisible();
   await expect(page.locator(".travel-marker")).toHaveCount(7);
+  await page.locator('.travel-marker.arrival[data-leg-index="3"]').click();
+  await expect(page.locator("body")).toHaveAttribute("data-selected-leg", "3");
+  const revealedCard = await page.evaluate(() => {
+    const listBounds = document.querySelector("#trip-list").getBoundingClientRect();
+    const cardBounds = document
+      .querySelector('.trip-card[data-leg-index="3"]')
+      .getBoundingClientRect();
+    return {
+      listScrollTop: document.querySelector("#trip-list").scrollTop,
+      fullyVisible:
+        cardBounds.top >= listBounds.top - 1 && cardBounds.bottom <= listBounds.bottom + 1,
+    };
+  });
+  expect(revealedCard.listScrollTop).toBeGreaterThan(0);
+  expect(revealedCard.fullyVisible).toBe(true);
   const routeGeometry = JSON.parse(await page.locator("body").getAttribute("data-route-geometry"));
   expect(routeGeometry.map((route) => route.legIndex)).toEqual([0, 1, 3]);
   expect(routeGeometry[0].start[0]).toBeCloseTo(121.8083, 4);
@@ -147,8 +186,13 @@ test("renders, filters, selects, and switches projection without refetching", as
   await expect(page.locator("#warning-xss")).toHaveCount(0);
   await expect(page.locator("#calendar-xss")).toHaveCount(0);
 
+  await page.locator("#detail-content").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  expect(await page.locator("#detail-content").evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await page.locator(".trip-card").nth(1).click();
   await expect(page.locator("body")).toHaveAttribute("data-selected-leg", "1");
+  expect(await page.locator("#detail-content").evaluate((element) => element.scrollTop)).toBe(0);
   await expect(page.locator("#detail-heading")).toContainText("AY1415");
   await expect(page.locator("#detail-content")).toContainText("<img id=calendar-xss>");
   await expect(page.locator("#detail-content")).toContainText("Estimated arrival updated safely");
@@ -162,6 +206,91 @@ test("renders, filters, selects, and switches projection without refetching", as
   await expect(page.locator("body")).toHaveAttribute("data-map-projection", "globe");
   expect(apiCalls).toBe(1);
 
+  await page.setViewportSize({width: 995, height: 554});
+  const compactPanelLayout = await page.evaluate(() => {
+    const panel = document.querySelector(".itinerary-panel");
+    const detail = document.querySelector("#detail-panel").getBoundingClientRect();
+    const warningList = document.querySelector("#warning-list");
+    return {
+      panelClientHeight: panel.clientHeight,
+      panelScrollHeight: panel.scrollHeight,
+      detailBottom: detail.bottom,
+      viewportHeight: window.innerHeight,
+      warningClientHeight: warningList.clientHeight,
+      warningScrollHeight: warningList.scrollHeight,
+    };
+  });
+  expect(compactPanelLayout.panelScrollHeight).toBeLessThanOrEqual(
+    compactPanelLayout.panelClientHeight + 1,
+  );
+  expect(compactPanelLayout.detailBottom).toBeLessThanOrEqual(compactPanelLayout.viewportHeight);
+  expect(compactPanelLayout.warningScrollHeight).toBeGreaterThan(
+    compactPanelLayout.warningClientHeight,
+  );
+
+  await page.setViewportSize({width: 995, height: 480});
+  const shortPanelLayout = await page.evaluate(() => {
+    const panel = document.querySelector(".itinerary-panel");
+    const panelBounds = panel.getBoundingClientRect();
+    const selectorBounds = document.querySelector("#trip-selector").getBoundingClientRect();
+    return {
+      overflowY: getComputedStyle(panel).overflowY,
+      panelClientHeight: panel.clientHeight,
+      panelScrollHeight: panel.scrollHeight,
+      panelTop: panelBounds.top,
+      selectorTop: selectorBounds.top,
+    };
+  });
+  expect(shortPanelLayout.overflowY).toBe("auto");
+  expect(shortPanelLayout.selectorTop).toBeGreaterThanOrEqual(shortPanelLayout.panelTop);
+  expect(shortPanelLayout.panelScrollHeight).toBeGreaterThan(shortPanelLayout.panelClientHeight);
+  await page.locator(".itinerary-panel").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  const shortDetailBottom = await page
+    .locator("#detail-panel")
+    .evaluate((element) => element.getBoundingClientRect().bottom);
+  expect(shortDetailBottom).toBeLessThanOrEqual(480);
+  await page.locator(".itinerary-panel").evaluate((element) => {
+    element.scrollTop = 0;
+  });
+
+  await page.setViewportSize({width: 500, height: 820});
+  await expect(page.locator(".topbar")).toBeVisible();
+  await expect(page.locator(".map-panel")).toBeVisible();
+  await expect(page.locator(".itinerary-panel")).toBeVisible();
+  const mobilePanelLayout = await page.evaluate(() => {
+    const tripList = document.querySelector("#trip-list");
+    const detailContent = document.querySelector("#detail-content");
+    return {
+      scrollY: window.scrollY,
+      tripList: {clientHeight: tripList.clientHeight, scrollHeight: tripList.scrollHeight},
+      detailContent: {
+        clientHeight: detailContent.clientHeight,
+        scrollHeight: detailContent.scrollHeight,
+      },
+    };
+  });
+  expect(mobilePanelLayout.scrollY).toBe(0);
+  expect(mobilePanelLayout.tripList.clientHeight).toBe(mobilePanelLayout.tripList.scrollHeight);
+  expect(mobilePanelLayout.detailContent.clientHeight).toBe(
+    mobilePanelLayout.detailContent.scrollHeight,
+  );
+  await page.locator('.travel-marker.arrival[data-leg-index="3"]').click();
+  await expect(page.locator("body")).toHaveAttribute("data-selected-leg", "3");
+  const mobileReveal = await page.evaluate(() => {
+    const cardBounds = document
+      .querySelector('.trip-card[data-leg-index="3"]')
+      .getBoundingClientRect();
+    return {
+      scrollY: window.scrollY,
+      fullyVisible: cardBounds.top >= -1 && cardBounds.bottom <= window.innerHeight + 1,
+    };
+  });
+  expect(mobileReveal.scrollY).toBeGreaterThan(0);
+  expect(mobileReveal.fullyVisible).toBe(true);
+  await page.setViewportSize({width: 1280, height: 720});
+
   await page.locator("#start-date").fill("2026-09-10");
   await page.locator("#end-date").fill("2026-09-01");
   await page.locator("#refresh-button").click();
@@ -174,11 +303,6 @@ test("renders, filters, selects, and switches projection without refetching", as
   await expect(page.locator("#empty-state")).toBeVisible();
   await expect(page.locator(".trip-card")).toHaveCount(0);
   expect(apiCalls).toBe(2);
-
-  await page.setViewportSize({width: 500, height: 820});
-  await expect(page.locator(".topbar")).toBeVisible();
-  await expect(page.locator(".map-panel")).toBeVisible();
-  await expect(page.locator(".itinerary-panel")).toBeVisible();
   expect(consoleErrors, `${consoleErrors.join("\n")}\n${serverStderr}`).toEqual([]);
 });
 
@@ -236,6 +360,26 @@ function travelPayload() {
         kind: "unknown_airport",
         event_id: "EVENT-3",
         message: "ZZZ has no bundled coordinates",
+      },
+      {
+        kind: "provider_warning",
+        event_id: "EVENT-1",
+        message: "Live departure gate is not available yet for this flight",
+      },
+      {
+        kind: "provider_warning",
+        event_id: "EVENT-2",
+        message: "Live arrival gate is not available yet for this flight",
+      },
+      {
+        kind: "provider_warning",
+        event_id: "EVENT-3",
+        message: "Airport metadata is incomplete and the route cannot be drawn",
+      },
+      {
+        kind: "provider_warning",
+        event_id: "EVENT-4",
+        message: "Flight status is temporarily using stale cached provider data",
       },
     ],
     legs: [
