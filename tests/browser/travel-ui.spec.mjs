@@ -104,12 +104,24 @@ test("renders, filters, selects, and switches projection without refetching", as
   expect(Math.abs(workspaceBounds.y + workspaceBounds.height - viewportHeight)).toBeLessThanOrEqual(1);
   await expect(page.locator(".trip-card")).toHaveCount(4);
   await expect(page.locator("#trip-count")).toHaveText("4");
-  await expect(page.locator(".trip-card").nth(0)).toContainText("HO1607");
+  await expect(page.locator(".trip-card").nth(0)).toContainText("D83229");
   await expect(page.locator(".trip-card").nth(1)).toContainText("AY1415");
   await expect(page.locator(".trip-card").nth(2)).toContainText("XX9");
   await expect(page.locator(".trip-card").nth(3)).toContainText("JL2");
   await expect(page.locator(".trip-card").nth(0)).toContainText("09:25 (+08:00)");
   await expect(page.locator(".trip-card").nth(0)).toContainText("14:00 (+03:00)");
+  const badge = page.locator(".flight-badge").first();
+  await expect(badge.locator(".flight-carrier")).toHaveText("D8");
+  await expect(badge.locator(".flight-number")).toHaveText("3229");
+  const badgeBounds = await badge.boundingBox();
+  const carrierBounds = await textBounds(badge.locator(".flight-carrier"));
+  const numberBounds = await textBounds(badge.locator(".flight-number"));
+  expect(badgeBounds).not.toBeNull();
+  expect(carrierBounds).not.toBeNull();
+  expect(numberBounds).not.toBeNull();
+  const badgeCenter = badgeBounds.x + badgeBounds.width / 2;
+  expect(Math.abs(carrierBounds.x + carrierBounds.width / 2 - badgeCenter)).toBeLessThanOrEqual(1);
+  expect(Math.abs(numberBounds.x + numberBounds.width / 2 - badgeCenter)).toBeLessThanOrEqual(1);
   await expect(page.locator("body")).toHaveAttribute("data-map-ready", "true", {timeout: 20_000});
   await expect(page.locator("body")).toHaveAttribute("data-map-projection", "globe");
   await expect(page.locator("body")).toHaveAttribute("data-route-count", "3");
@@ -183,6 +195,15 @@ function firstLine(stream) {
   });
 }
 
+async function textBounds(locator) {
+  return locator.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const bounds = range.getBoundingClientRect();
+    return {x: bounds.x, width: bounds.width};
+  });
+}
+
 function emptyPayload(start, end) {
   return {
     schema_version: 1,
@@ -217,7 +238,7 @@ function travelPayload() {
     legs: [
       leg({
         eventId: "EVENT-1",
-        flight: "HO1607",
+        flight: "D8 3229",
         from: airport("PVG", 31.1443, 121.8083, "Shanghai Pudong International Airport"),
         to: airport("HEL", 60.3172, 24.9633, "Helsinki Vantaa Airport"),
         departure: "2026-07-13T09:25:00+08:00",

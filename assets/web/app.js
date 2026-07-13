@@ -241,7 +241,11 @@ function renderTripList(legs) {
 
     const badge = document.createElement("span");
     badge.className = "flight-badge";
-    badge.textContent = compactFlightNumber(leg.flight_number);
+    const flightNumber = splitFlightNumber(leg.flight_number);
+    badge.append(
+      classSpan("flight-carrier", flightNumber.carrier),
+      classSpan("flight-number", flightNumber.number),
+    );
 
     const main = document.createElement("span");
     main.className = "trip-main";
@@ -807,9 +811,17 @@ function formatGeneratedAt(value) {
   return new Intl.DateTimeFormat(undefined, {timeStyle: "medium"}).format(date);
 }
 
-function compactFlightNumber(value) {
+function splitFlightNumber(value) {
   const text = stringValue(value, "FL");
-  return text.length > 7 ? text.slice(0, 7) : text;
+  const compact = text.length > 7 ? text.slice(0, 7) : text;
+  const spaced = compact.match(/^(\S+)\s+(.+)$/);
+  if (spaced) {
+    return {carrier: spaced[1], number: spaced[2]};
+  }
+  if (compact.length > 2) {
+    return {carrier: compact.slice(0, 2), number: compact.slice(2)};
+  }
+  return {carrier: compact, number: ""};
 }
 
 function stringValue(value, fallback) {
