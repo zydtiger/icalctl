@@ -15,7 +15,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 const API_SCHEMA_VERSION: u8 = 1;
 const CAPABILITY_COOKIE: &str = "icalctl_travel_capability";
-const DEFAULT_MAP_STYLE_URL: &str = "https://demotiles.maplibre.org/style.json";
+const DEFAULT_MAP_STYLE_URL: &str = "https://tiles.openfreemap.org/styles/bright";
 const HTML_CONTENT_TYPE: &str = "text/html; charset=utf-8";
 const JAVASCRIPT_CONTENT_TYPE: &str = "application/javascript; charset=utf-8";
 const JSON_CONTENT_TYPE: &str = "application/json; charset=utf-8";
@@ -844,7 +844,10 @@ mod tests {
         assert_eq!(json["legs"][0]["live_status"], serde_json::Value::Null);
         assert_eq!(json["warnings"], serde_json::json!([]));
         assert_eq!(json["map"]["projection"], "globe");
-        assert_eq!(json["map"]["style_url"], DEFAULT_MAP_STYLE_URL);
+        assert_eq!(
+            json["map"]["style_url"],
+            "https://tiles.openfreemap.org/styles/bright"
+        );
     }
 
     #[test]

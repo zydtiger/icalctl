@@ -4,6 +4,7 @@ const MAX_RANGE_DAYS = 366;
 const ROUTE_SOURCE_ID = "icalctl-travel-routes";
 const ROUTE_LAYER_ID = "icalctl-travel-route-lines";
 const MAPLIBRE_WORKER_URL = "/assets/vendor/maplibre-gl/maplibre-gl-csp-worker.js";
+const DEFAULT_MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/bright";
 const BLANK_STYLE = {
   version: 8,
   sources: {},
@@ -367,7 +368,7 @@ function ensureMap(mapConfig) {
   if (state.map || typeof window.maplibregl === "undefined") {
     return;
   }
-  const styleUrl = stringValue(mapConfig?.style_url, "https://demotiles.maplibre.org/style.json");
+  const styleUrl = stringValue(mapConfig?.style_url, DEFAULT_MAP_STYLE_URL);
   try {
     state.map = new window.maplibregl.Map({
       container: "map",

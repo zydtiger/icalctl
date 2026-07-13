@@ -57,7 +57,8 @@ open_browser = true
 [travel.map]
 projection = "globe"
 # Optional public/keyless MapLibre style URL.
-# style_url = "https://demotiles.maplibre.org/style.json"
+# Defaults to the OpenFreeMap Bright street style.
+# style_url = "https://tiles.openfreemap.org/styles/bright"
 "#;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -148,7 +148,8 @@ open_browser = true
 [travel.map]
 projection = "globe"
 # Optional public/keyless MapLibre style URL.
-# style_url = "https://demotiles.maplibre.org/style.json"
+# Defaults to the OpenFreeMap Bright street style.
+# style_url = "https://tiles.openfreemap.org/styles/bright"
 ```
 
 `Cargo.toml`'s `[package].version` is the single semantic-version source. The
@@ -710,7 +711,8 @@ ledger live at:
 raw FlightAware payloads are never stored in this cache or returned to the
 browser.
 
-The default keyless basemap is MapLibre's public demo style. Override
+The default keyless basemap is OpenFreeMap's Bright street style, rendered by
+the bundled MapLibre client with its required attribution. Override
 `travel.map.style_url` for another MapLibre style/source and set
 `travel.map.projection` to `map` or `globe`. The style URL is sent to the local
 browser, so do not put a secret token in it; use a public/keyless style URL or a

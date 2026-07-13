@@ -754,9 +754,10 @@ provider cache and usage state normally live under
 `~/Library/Caches/icalctl/flightaware/` (`XDG_CACHE_HOME` overrides the cache
 root). The key and raw provider responses must never be surfaced or persisted.
 
-Map/globe switching reuses the current response. `travel.map.style_url` is sent
-to the local browser, so it must not contain secrets. Unknown airports and
-provider warnings remain visible without dropping an otherwise valid leg.
+Map/globe switching reuses the current response. The default basemap is
+OpenFreeMap's Bright street style. `travel.map.style_url` is sent to the local
+browser, so it must not contain secrets. Unknown airports and provider warnings
+remain visible without dropping an otherwise valid leg.
 
 ### `update`
 
