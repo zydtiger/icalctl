@@ -273,7 +273,7 @@ function renderTripList(legs) {
     const freshness = leg.live_status?.freshness?.state;
     status.className = `status-chip${freshness ? freshness === "stale" ? " stale" : " live" : ""}`;
     status.textContent = leg.live_status
-      ? stringValue(leg.live_status.status, "Live update")
+      ? formatStatus(leg.live_status.status)
       : "Calendar";
 
     card.append(badge, main, status);
@@ -809,6 +809,11 @@ function formatGeneratedAt(value) {
     return "just now";
   }
   return new Intl.DateTimeFormat(undefined, {timeStyle: "medium"}).format(date);
+}
+
+function formatStatus(value) {
+  const status = stringValue(value, "Live update").replaceAll("_", " ");
+  return `${status.charAt(0).toUpperCase()}${status.slice(1)}`;
 }
 
 function splitFlightNumber(value) {

@@ -108,6 +108,9 @@ test("renders, filters, selects, and switches projection without refetching", as
   await expect(page.locator(".trip-card").nth(1)).toContainText("AY1415");
   await expect(page.locator(".trip-card").nth(2)).toContainText("XX9");
   await expect(page.locator(".trip-card").nth(3)).toContainText("JL2");
+  await expect(page.locator(".status-chip").nth(0)).toHaveText("En route");
+  await expect(page.locator(".status-chip").nth(1)).toHaveText("Scheduled");
+  await expect(page.locator(".status-chip").nth(2)).toHaveText("Calendar");
   await expect(page.locator(".trip-card").nth(0)).toContainText("09:25 (+08:00)");
   await expect(page.locator(".trip-card").nth(0)).toContainText("14:00 (+03:00)");
   const badge = page.locator(".flight-badge").first();

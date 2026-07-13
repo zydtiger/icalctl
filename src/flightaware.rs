@@ -73,6 +73,10 @@ pub fn enrich_collection(config: &FlightAwareConfig, collection: &mut TravelColl
     if !config.enabled || collection.legs.is_empty() {
         return;
     }
+    let now = Utc::now();
+    if !has_queryable_leg(collection, now) {
+        return;
+    }
 
     let Some(api_key) = config.api_key.as_deref() else {
         push_warning(
@@ -97,14 +101,7 @@ pub fn enrich_collection(config: &FlightAwareConfig, collection: &mut TravelColl
         }
     };
     let transport = UreqTransport::new(config.request_timeout_seconds);
-    enrich_with(
-        config,
-        collection,
-        &transport,
-        &cache_dir,
-        Utc::now(),
-        api_key,
-    );
+    enrich_with(config, collection, &transport, &cache_dir, now, api_key);
 }
 
 fn enrich_with(
@@ -115,6 +112,10 @@ fn enrich_with(
     now: DateTime<Utc>,
     api_key: &str,
 ) {
+    if !has_queryable_leg(collection, now) {
+        return;
+    }
+
     let _usage_lock = match acquire_usage_lock(cache_dir) {
         Ok(lock) => lock,
         Err(error) => {
@@ -146,6 +147,10 @@ fn enrich_with(
 
     let TravelCollection { legs, warnings } = collection;
     for leg in legs {
+        let Some((start, end)) = query_window(leg, now) else {
+            continue;
+        };
+
         let key = match CacheKey::from_leg(leg) {
             Ok(key) => key,
             Err(error) => {
@@ -190,18 +195,6 @@ fn enrich_with(
             );
             continue;
         }
-
-        let Some((start, end)) = query_window(leg, now) else {
-            use_stale_or_calendar(
-                leg,
-                cached.as_ref(),
-                config.stale_if_error,
-                warnings,
-                "flightaware_outside_live_window",
-                "FlightAware only exposes this endpoint for flights near the current date",
-            );
-            continue;
-        };
 
         match reserve_result_set(cache_dir, &mut usage, config.monthly_result_set_limit) {
             Ok(true) => {}
@@ -618,6 +611,13 @@ fn query_window(leg: &TravelLeg, now: DateTime<Utc>) -> Option<(String, String)>
     let start = (departure - Duration::hours(QUERY_WINDOW_HOURS)).max(earliest);
     let end = (departure + Duration::hours(QUERY_WINDOW_HOURS)).min(latest);
     (start < departure && departure < end).then(|| (timestamp(start), timestamp(end)))
+}
+
+fn has_queryable_leg(collection: &TravelCollection, now: DateTime<Utc>) -> bool {
+    collection
+        .legs
+        .iter()
+        .any(|leg| query_window(leg, now).is_some())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2288,6 +2288,197 @@ mod tests {
         );
 
         assert!(query_window(&travel_leg, now()).is_none());
+    }
+
+    #[test]
+    fn far_future_flights_stay_calendar_only_without_warnings() {
+        let directory = TestDirectory::new();
+        let transport = FakeTransport::new(Vec::new());
+        let mut travel = collection(vec![leg(
+            "event-future",
+            "FI342",
+            "2026-07-20T01:25:00Z",
+            "2026-07-20T11:00:00Z",
+        )]);
+
+        enrich_with(
+            &config(10, true),
+            &mut travel,
+            &transport,
+            directory.path(),
+            now(),
+            "TEST-API-KEY",
+        );
+
+        assert_eq!(transport.request_count(), 0);
+        assert!(travel.legs[0].live_status.is_none());
+        assert!(travel.warnings.is_empty());
+    }
+
+    #[test]
+    fn far_future_only_collection_skips_unconfigured_provider_warning() {
+        let departure = Utc::now() + Duration::days(30);
+        let arrival = departure + Duration::hours(9);
+        let mut travel = collection(vec![leg(
+            "event-future",
+            "FI342",
+            &timestamp(departure),
+            &timestamp(arrival),
+        )]);
+        let mut provider_config = config(10, true);
+        provider_config.api_key = None;
+
+        enrich_collection(&provider_config, &mut travel);
+
+        assert!(travel.legs[0].live_status.is_none());
+        assert!(travel.warnings.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn far_future_only_collection_ignores_busy_usage_ledger() {
+        let directory = TestDirectory::new();
+        let _lock = acquire_usage_lock(directory.path()).unwrap();
+        let transport = FakeTransport::new(Vec::new());
+        let mut travel = collection(vec![leg(
+            "event-future",
+            "FI342",
+            "2026-07-20T01:25:00Z",
+            "2026-07-20T11:00:00Z",
+        )]);
+
+        enrich_with(
+            &config(10, true),
+            &mut travel,
+            &transport,
+            directory.path(),
+            now(),
+            "TEST-API-KEY",
+        );
+
+        assert_eq!(transport.request_count(), 0);
+        assert!(travel.legs[0].live_status.is_none());
+        assert!(travel.warnings.is_empty());
+    }
+
+    #[test]
+    fn mixed_collection_skips_future_positive_negative_and_stale_cache_entries() {
+        let directory = TestDirectory::new();
+        let positive_leg = leg(
+            "event-positive",
+            "FI342",
+            "2026-07-20T01:25:00Z",
+            "2026-07-20T11:00:00Z",
+        );
+        let positive_key = CacheKey::from_leg(&positive_leg).unwrap();
+        write_cache_entry(
+            &cache_path(directory.path(), &positive_key),
+            &CacheEntry {
+                version: CACHE_VERSION,
+                key: positive_key,
+                fetched_at: timestamp(now()),
+                expires_at: timestamp(now() + Duration::hours(1)),
+                outcome: "matched".to_string(),
+                status: Some(normalize_status(&scheduled_flight(), now())),
+            },
+        )
+        .unwrap();
+
+        let negative_leg = leg(
+            "event-negative",
+            "HO1608",
+            "2026-07-20T03:25:00Z",
+            "2026-07-20T13:00:00Z",
+        );
+        let negative_key = CacheKey::from_leg(&negative_leg).unwrap();
+        write_cache_entry(
+            &cache_path(directory.path(), &negative_key),
+            &CacheEntry::negative(negative_key, now(), "no_match"),
+        )
+        .unwrap();
+
+        let stale_leg = leg(
+            "event-stale",
+            "DY627",
+            "2026-07-20T05:25:00Z",
+            "2026-07-20T07:00:00Z",
+        );
+        let stale_key = CacheKey::from_leg(&stale_leg).unwrap();
+        write_cache_entry(
+            &cache_path(directory.path(), &stale_key),
+            &CacheEntry {
+                version: CACHE_VERSION,
+                key: stale_key,
+                fetched_at: timestamp(now() - Duration::hours(2)),
+                expires_at: timestamp(now() - Duration::hours(1)),
+                outcome: "matched".to_string(),
+                status: Some(normalize_status(
+                    &scheduled_flight(),
+                    now() - Duration::hours(2),
+                )),
+            },
+        )
+        .unwrap();
+
+        let transport = FakeTransport::new(vec![Ok(flights_response(vec![scheduled_flight()]))]);
+        let current_leg = leg(
+            "event-current",
+            "HO1607",
+            "2026-07-11T01:25:00Z",
+            "2026-07-11T11:00:00Z",
+        );
+        let mut travel = collection(vec![current_leg, positive_leg, negative_leg, stale_leg]);
+        enrich_with(
+            &config(10, true),
+            &mut travel,
+            &transport,
+            directory.path(),
+            now(),
+            "TEST-API-KEY",
+        );
+
+        assert_eq!(transport.request_count(), 1);
+        assert!(travel.legs[0].live_status.is_some());
+        assert!(travel.legs[1..].iter().all(|leg| leg.live_status.is_none()));
+        assert!(travel.warnings.is_empty());
+    }
+
+    #[test]
+    fn far_future_flights_stay_silent_during_provider_backoff() {
+        let directory = TestDirectory::new();
+        let transport = FakeTransport::new(vec![Ok(ProviderResponse {
+            status: 429,
+            retry_after: Some(600),
+            body: String::new(),
+        })]);
+        let mut travel = collection(vec![
+            leg(
+                "event-current",
+                "HO1607",
+                "2026-07-11T01:25:00Z",
+                "2026-07-11T11:00:00Z",
+            ),
+            leg(
+                "event-future",
+                "FI342",
+                "2026-07-20T01:25:00Z",
+                "2026-07-20T11:00:00Z",
+            ),
+        ]);
+
+        enrich_with(
+            &config(10, true),
+            &mut travel,
+            &transport,
+            directory.path(),
+            now(),
+            "TEST-API-KEY",
+        );
+
+        assert_eq!(transport.request_count(), 1);
+        assert!(travel.legs[1].live_status.is_none());
+        assert_eq!(travel.warnings.len(), 1);
+        assert_eq!(travel.warnings[0].kind, "flightaware_request_failed");
     }
 
     #[test]
