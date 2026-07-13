@@ -196,6 +196,17 @@ test("renders, filters, selects, and switches projection without refetching", as
   await expect(page.locator("#detail-heading")).toContainText("AY1415");
   await expect(page.locator("#detail-content")).toContainText("<img id=calendar-xss>");
   await expect(page.locator("#detail-content")).toContainText("Estimated arrival updated safely");
+  await expect(page.locator("#detail-content")).not.toContainText("CAL-TRAVEL");
+  for (const obsoleteLabel of [
+    "Calendar id",
+    "Live status",
+    "Departure update",
+    "Arrival update",
+    "Departure delay",
+    "Arrival delay",
+  ]) {
+    await expect(page.locator("#detail-content dt", {hasText: obsoleteLabel})).toHaveCount(0);
+  }
 
   await page.locator('[data-projection="mercator"]').click();
   await expect(page.locator("body")).toHaveAttribute("data-projection", "mercator");
@@ -304,6 +315,111 @@ test("renders, filters, selects, and switches projection without refetching", as
   await expect(page.locator(".trip-card")).toHaveCount(0);
   expect(apiCalls).toBe(2);
   expect(consoleErrors, `${consoleErrors.join("\n")}\n${serverStderr}`).toEqual([]);
+});
+
+test("consolidates booked and provider timing details", async ({page}) => {
+  await page.route("**/assets/test-style.json", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        version: 8,
+        sources: {},
+        layers: [{id: "background", type: "background", paint: {"background-color": "#0b1317"}}],
+      }),
+    }),
+  );
+  await page.route("**/api/travel**", (route) =>
+    route.fulfill({contentType: "application/json", body: JSON.stringify(detailPayload())}),
+  );
+
+  await page.goto(serverInfo.url, {waitUntil: "domcontentloaded"});
+  const detail = page.locator("#detail-content");
+  const timingGroup = (endpoint) => detail.locator(`.timing-group[data-endpoint="${endpoint}"]`);
+
+  await expect(timingGroup("departure").locator(".timing-heading")).toHaveText(
+    "Departure · Jul 15, 2026",
+  );
+  await expect(timingGroup("departure")).toContainText("Booked 16:00 (+02:00)");
+  await expect(timingGroup("arrival")).toContainText("Booked 17:10 (+02:00)");
+  await expect(detail).toContainText("Travel");
+  await expect(detail).not.toContainText("CAL-TRAVEL");
+
+  await page.locator('.trip-card[data-leg-index="1"]').click();
+  await expect(timingGroup("departure")).toContainText("16:00 (+02:00) · On time");
+  await expect(timingGroup("departure")).not.toContainText("Booked");
+  await expect(timingGroup("arrival")).toContainText("17:10 (+02:00) · On time");
+  await expect(detail).not.toContainText("Scheduled");
+
+  await page.locator('.trip-card[data-leg-index="2"]').click();
+  await expect(timingGroup("departure")).toContainText("Booked 16:00 (+02:00)");
+  await expect(timingGroup("departure")).toContainText(
+    "Updated 16:10 (+02:00) · 10 min late",
+  );
+  await expect(timingGroup("arrival")).toContainText("Booked 17:10 (+02:00)");
+  await expect(timingGroup("arrival")).toContainText(
+    "Updated 17:18 (+02:00) · 8 min late",
+  );
+
+  await page.locator('.trip-card[data-leg-index="3"]').click();
+  await expect(timingGroup("departure")).toContainText(
+    "Updated 16:12 (+02:00) · 12 min late",
+  );
+  await expect(timingGroup("departure")).not.toContainText("16:05 (+02:00)");
+  await expect(timingGroup("arrival")).toContainText(
+    "Updated 17:20 (+02:00) · 10 min late",
+  );
+  await expect(timingGroup("arrival")).not.toContainText("17:16 (+02:00)");
+
+  await page.locator('.trip-card[data-leg-index="4"]').click();
+  await expect(timingGroup("departure").locator(".timing-heading")).toHaveText(
+    "Departure · Aug 1, 2026",
+  );
+  await expect(timingGroup("departure")).toContainText("Booked 16:35 (+03:00)");
+  await expect(timingGroup("arrival").locator(".timing-heading")).toHaveText(
+    "Arrival · Aug 2, 2026",
+  );
+  await expect(timingGroup("arrival")).toContainText("Booked 06:45 (+08:00)");
+
+  await page.locator('.trip-card[data-leg-index="5"]').click();
+  await expect(timingGroup("arrival").locator(".timing-heading")).toHaveText(
+    "Arrival · Aug 1, 2026",
+  );
+  await expect(timingGroup("arrival")).toContainText("Booked 23:55 (+02:00)");
+  await expect(timingGroup("arrival")).toContainText(
+    "Updated Aug 2 · 00:15 (+02:00) · 20 min late",
+  );
+
+  await page.locator('.trip-card[data-leg-index="6"]').click();
+  await expect(page.locator('.trip-card[data-leg-index="6"] .status-chip')).toHaveText("Diverted");
+  await expect(detail.locator("dt", {hasText: "Diversion"})).toHaveCount(1);
+  await expect(detail).toContainText("Rerouted via OSL due to weather");
+  await expect(detail.locator("dt", {hasText: "Operational update"})).toHaveCount(0);
+
+  await page.locator('.trip-card[data-leg-index="7"]').click();
+  await expect(timingGroup("departure")).toContainText("Booked 16:00 (+02:00)");
+  await expect(timingGroup("departure")).toContainText(
+    "Updated 16:04 (+02:00) · 4 min late",
+  );
+  await expect(timingGroup("arrival")).toContainText("Updated 17:14 (+02:00) · 4 min late");
+
+  await page.locator('.trip-card[data-leg-index="8"]').click();
+  await expect(timingGroup("departure")).toContainText(
+    "Updated 16:07 (+02:00) · 7 min late",
+  );
+  await expect(timingGroup("departure")).not.toContainText("16:04 (+02:00)");
+  await expect(timingGroup("arrival")).toContainText("Updated 17:19 (+02:00) · 9 min late");
+  await expect(timingGroup("arrival")).not.toContainText("17:14 (+02:00)");
+
+  for (const obsoleteLabel of [
+    "Calendar id",
+    "Live status",
+    "Departure update",
+    "Arrival update",
+    "Departure delay",
+    "Arrival delay",
+  ]) {
+    await expect(detail.locator("dt", {hasText: obsoleteLabel})).toHaveCount(0);
+  }
 });
 
 function firstLine(stream) {
@@ -427,6 +543,131 @@ function travelPayload() {
   };
 }
 
+function detailPayload() {
+  const from = airport("OSL", 60.1976, 11.1004, "Oslo Airport");
+  const to = airport("CPH", 55.618, 12.6508, "Copenhagen Airport");
+  const baseline = {
+    from,
+    to,
+    departure: "2026-07-15T16:00:00+02:00",
+    arrival: "2026-07-15T17:10:00+02:00",
+    calendar: "Travel",
+  };
+  return {
+    schema_version: 1,
+    generated_at: "2026-07-14T08:00:00Z",
+    range: {start: "2026-07-14", end: "2026-08-02", end_inclusive: true},
+    calendar_ids: ["CAL-TRAVEL"],
+    map: {projection: "globe", style_url: "/assets/test-style.json"},
+    warnings: [],
+    legs: [
+      leg({eventId: "DETAIL-0", flight: "CAL1", ...baseline, live: null}),
+      leg({
+        eventId: "DETAIL-1",
+        flight: "ON1",
+        ...baseline,
+        live: liveStatus("scheduled", "Scheduled", "fresh", {
+          scheduled_departure: "2026-07-15T14:00:00Z",
+          scheduled_arrival: "2026-07-15T15:10:00Z",
+          estimated_departure: null,
+          estimated_arrival: null,
+          departure_delay_seconds: 0,
+          arrival_delay_seconds: 0,
+        }),
+      }),
+      leg({
+        eventId: "DETAIL-2",
+        flight: "EST2",
+        ...baseline,
+        live: liveStatus("scheduled", "Scheduled", "fresh", {
+          estimated_departure: "2026-07-15T14:10:00Z",
+          estimated_arrival: "2026-07-15T15:18:00Z",
+          departure_delay_seconds: 600,
+          arrival_delay_seconds: 480,
+        }),
+      }),
+      leg({
+        eventId: "DETAIL-3",
+        flight: "ACT3",
+        ...baseline,
+        live: liveStatus("delayed", "Delayed", "fresh", {
+          estimated_departure: "2026-07-15T14:05:00Z",
+          actual_departure: "2026-07-15T14:12:00Z",
+          estimated_arrival: "2026-07-15T15:16:00Z",
+          actual_arrival: "2026-07-15T15:20:00Z",
+          departure_delay_seconds: 720,
+          arrival_delay_seconds: 600,
+        }),
+      }),
+      leg({
+        eventId: "DETAIL-4",
+        flight: "NIGHT4",
+        from,
+        to,
+        departure: "2026-08-01T16:35:00+03:00",
+        arrival: "2026-08-02T06:45:00+08:00",
+        calendar: "Travel",
+        live: null,
+      }),
+      leg({
+        eventId: "DETAIL-5",
+        flight: "DATE5",
+        from,
+        to,
+        departure: "2026-08-01T21:00:00+02:00",
+        arrival: "2026-08-01T23:55:00+02:00",
+        calendar: "Travel",
+        live: liveStatus("delayed", "Delayed", "fresh", {
+          estimated_departure: null,
+          actual_departure: null,
+          estimated_arrival: "2026-08-01T22:10:00Z",
+          actual_arrival: "2026-08-01T22:15:00Z",
+          departure_delay_seconds: 0,
+          arrival_delay_seconds: 1200,
+        }),
+      }),
+      leg({
+        eventId: "DETAIL-6",
+        flight: "DIV6",
+        ...baseline,
+        live: liveStatus("diverted", "Rerouted via OSL due to weather", "fresh", {
+          diverted: true,
+          estimated_departure: null,
+          estimated_arrival: null,
+          departure_delay_seconds: null,
+          arrival_delay_seconds: null,
+        }),
+      }),
+      leg({
+        eventId: "DETAIL-7",
+        flight: "SCH7",
+        ...baseline,
+        live: liveStatus("scheduled", "Scheduled", "fresh", {
+          scheduled_departure: "2026-07-15T14:04:00Z",
+          scheduled_arrival: "2026-07-15T15:14:00Z",
+          estimated_departure: null,
+          estimated_arrival: null,
+          departure_delay_seconds: null,
+          arrival_delay_seconds: null,
+        }),
+      }),
+      leg({
+        eventId: "DETAIL-8",
+        flight: "EST8",
+        ...baseline,
+        live: liveStatus("scheduled", "Scheduled", "fresh", {
+          scheduled_departure: "2026-07-15T14:04:00Z",
+          scheduled_arrival: "2026-07-15T15:14:00Z",
+          estimated_departure: "2026-07-15T14:07:00Z",
+          estimated_arrival: "2026-07-15T15:19:00Z",
+          departure_delay_seconds: null,
+          arrival_delay_seconds: null,
+        }),
+      }),
+    ],
+  };
+}
+
 function leg({eventId, flight, from, to, departure, arrival, calendar, live}) {
   return {
     flight_number: flight,
@@ -460,7 +701,7 @@ function airport(code, latitude, longitude, name) {
   };
 }
 
-function liveStatus(status, description, freshnessState) {
+function liveStatus(status, description, freshnessState, overrides = {}) {
   return {
     provider: "flightaware",
     provider_flight_id: `FA-${status}`,
@@ -486,5 +727,6 @@ function liveStatus(status, description, freshnessState) {
       fetched_at: "2026-07-12T11:58:00Z",
       expires_at: "2026-07-12T12:03:00Z",
     },
+    ...overrides,
   };
 }
