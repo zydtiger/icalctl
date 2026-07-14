@@ -1,11 +1,12 @@
 mod conversion;
+mod hierarchy;
 
 pub(super) use conversion::*;
+#[cfg(test)]
+pub(super) use hierarchy::private_class;
+use hierarchy::{reminders_with_hierarchy, set_reminderkit_parent};
 
-use super::{
-    ReminderAddPatch, ReminderLifecyclePatch, ReminderSaveDraft, ReminderStore,
-    reminders_with_hierarchy, set_reminderkit_parent,
-};
+use super::{ReminderAddPatch, ReminderLifecyclePatch, ReminderSaveDraft, ReminderStore};
 use crate::models::{ReminderListReport, ReminderReport};
 use anyhow::{Context, Result, anyhow, bail};
 use block2::RcBlock;
