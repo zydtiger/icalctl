@@ -1,5 +1,7 @@
+use super::*;
+
+use ::eventkit::CalendarInfo;
 use anyhow::{Result, anyhow, bail};
-use eventkit::CalendarInfo;
 use std::fmt::Write;
 
 #[derive(Debug, Default)]
@@ -120,10 +122,125 @@ fn ambiguous_calendar_message(title: &str, candidates: &[&CalendarInfo]) -> Stri
     message
 }
 
+pub(crate) fn resolve_target_calendar(
+    events: &EventsManager,
+    args: &WriteCalendarSelectorArgs,
+    allow_default: bool,
+) -> Result<CalendarInfo> {
+    Ok(resolve_target_calendar_with_selection(events, args, allow_default)?.0)
+}
+
+pub(crate) fn resolve_target_calendar_with_selection(
+    events: &EventsManager,
+    args: &WriteCalendarSelectorArgs,
+    allow_default: bool,
+) -> Result<(CalendarInfo, CalendarSelection)> {
+    if write_selector_is_empty(args) {
+        if !allow_default {
+            bail!("a calendar selector is required");
+        }
+        if let Some(calendar_id) = crate::config::default_calendar_id()? {
+            let calendars = list_calendars(events)?;
+            let ids = vec![calendar_id];
+            let calendar = require_single_writable_calendar(
+                &calendars,
+                &CalendarSelector {
+                    titles: &[],
+                    ids: &ids,
+                    source: None,
+                    source_id: None,
+                },
+            )?;
+            Ok((calendar, CalendarSelection::ConfiguredDefault))
+        } else {
+            let calendar = events
+                .default_calendar()
+                .context("no default calendar is available for new events")?;
+            Ok((calendar, CalendarSelection::EventkitDefault))
+        }
+    } else {
+        let calendars = list_calendars(events)?;
+        let titles: Vec<String> = args.calendar.iter().cloned().collect();
+        let ids: Vec<String> = args.calendar_id.iter().cloned().collect();
+        let calendar = require_single_writable_calendar(
+            &calendars,
+            &CalendarSelector {
+                titles: &titles,
+                ids: &ids,
+                source: args.calendar_source.as_deref(),
+                source_id: args.source_id.as_deref(),
+            },
+        )?;
+        Ok((calendar, CalendarSelection::Explicit))
+    }
+}
+
+pub(super) fn write_selector_is_empty(args: &WriteCalendarSelectorArgs) -> bool {
+    args.calendar.is_none() && args.calendar_id.is_none()
+}
+
+#[cfg(test)]
+pub(super) fn calendar_selection_for_write_with_config(
+    args: &WriteCalendarSelectorArgs,
+    has_configured_default: bool,
+) -> CalendarSelection {
+    if write_selector_is_empty(args) {
+        if has_configured_default {
+            CalendarSelection::ConfiguredDefault
+        } else {
+            CalendarSelection::EventkitDefault
+        }
+    } else {
+        CalendarSelection::Explicit
+    }
+}
+
+pub(super) fn calendar_reports(
+    calendars: &[CalendarInfo],
+    default_id: Option<&str>,
+) -> Vec<CalendarReport> {
+    calendars
+        .iter()
+        .map(|calendar| {
+            let mut report = CalendarReport::from(calendar);
+            report.is_default_for_new_events = default_id == Some(calendar.identifier.as_str());
+            report
+        })
+        .collect()
+}
+
+pub(super) fn filter_calendar_list(
+    calendars: Vec<CalendarInfo>,
+    source: Option<&str>,
+    writable_only: bool,
+) -> Vec<CalendarInfo> {
+    calendars
+        .into_iter()
+        .filter(|calendar| source.is_none_or(|source| calendar.source.as_deref() == Some(source)))
+        .filter(|calendar| !writable_only || calendar.allows_modifications)
+        .collect()
+}
+
+pub(super) fn event_calendar(events: &EventsManager, event: &EventItem) -> Result<CalendarInfo> {
+    let calendars = list_calendars(events)?;
+    event
+        .calendar_id
+        .as_deref()
+        .and_then(|id| calendars.iter().find(|calendar| calendar.identifier == id))
+        .or_else(|| {
+            event
+                .calendar_title
+                .as_deref()
+                .and_then(|title| calendars.iter().find(|calendar| calendar.title == title))
+        })
+        .cloned()
+        .context("event calendar is no longer available")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eventkit::CalendarType;
+    use ::eventkit::CalendarType;
 
     fn calendar(id: &str, title: &str, source: &str, source_id: &str) -> CalendarInfo {
         CalendarInfo {

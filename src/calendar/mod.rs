@@ -1,7 +1,27 @@
-use crate::cache::resolve_event_show_ref;
-use crate::calendar_selector::{
-    CalendarSelector, require_single_writable_calendar, resolve_calendars,
+mod duplicates;
+mod eventkit;
+mod read;
+mod recurrence;
+mod selection;
+
+pub(crate) use self::eventkit::{
+    create_event_in_calendar, read_event_details, update_event_calendar_metadata,
+    validate_event_time_zone, validate_event_url,
 };
+pub(crate) use self::read::{authorized_events_manager, ensure_valid_event_range, fetch_events};
+pub(crate) use self::recurrence::{
+    parse_event_recurrence, recurrence_rules_match, validate_recurring_all_day_inputs,
+};
+pub(crate) use self::selection::{resolve_target_calendar, resolve_target_calendar_with_selection};
+
+use self::duplicates::*;
+use self::eventkit::*;
+use self::read::*;
+use self::recurrence::*;
+use self::selection::*;
+
+use self::selection::{CalendarSelector, resolve_calendars};
+use crate::cache::resolve_event_show_ref;
 use crate::cli::{
     AvailabilityArg, BatchCommand, Command, EventJsonRecurrence, EventRecurrenceArgs,
     EventRepeatArg, EventScopeArg, EventWeekdayArg, IfExistsArg, ReadCalendarSelectorArgs,
@@ -12,22 +32,18 @@ use crate::dates::{
     parse_start_datetime, parse_start_datetime_in_time_zone, today_range, utc_datetime,
     validate_time_zone,
 };
-use crate::eventkit_bridge::{
-    canonical_eventkit_recurrence_end_utc, create_event_in_calendar, delete_event_scoped,
-    read_event_details, update_event_calendar_metadata, update_event_scoped,
-    validate_event_time_zone, validate_event_url,
-};
+
 use crate::models::{
     CalendarReport, CalendarSelection, DeletedReport, EventDraftReport, EventRecurrenceEndReport,
     EventRecurrenceReport, EventRecurrenceWeekdayReport, EventReport, JsonOutput, StatusReport,
 };
 use crate::output::event_time_range;
-use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
-use eventkit::{
+use ::eventkit::{
     AlarmInfo, AlarmProximity, AuthorizationStatus, CalendarInfo, EventAvailability, EventDraft,
     EventItem, EventKitError, EventPatch, EventSpan, EventsManager,
 };
+use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use serde::Deserialize;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -505,131 +521,6 @@ fn read_notes_file(path: &Path) -> Result<String> {
         .with_context(|| format!("failed to read notes file {}", path.display()))
 }
 
-fn event_recurrence_args_is_empty(args: &EventRecurrenceArgs) -> bool {
-    args.repeat.is_none()
-        && args.interval.is_none()
-        && args.weekdays.is_empty()
-        && args.month_days.is_empty()
-        && args.count.is_none()
-        && args.until.is_none()
-}
-
-pub(crate) fn parse_event_recurrence(
-    args: &EventRecurrenceArgs,
-    start_input: &str,
-    time_zone: Option<&str>,
-) -> Result<Option<EventRecurrenceReport>> {
-    let Some(frequency) = args.repeat else {
-        if !event_recurrence_args_is_empty(args) {
-            bail!("event recurrence options require --repeat");
-        }
-        return Ok(None);
-    };
-    let interval = args.interval.unwrap_or(1);
-    if interval == 0 {
-        bail!("--repeat-interval must be greater than zero");
-    }
-    isize::try_from(interval).context("--repeat-interval is too large for EventKit")?;
-    if args.count == Some(0) {
-        bail!("--repeat-count must be greater than zero");
-    }
-    if frequency == EventRepeatArg::Daily
-        && (!args.weekdays.is_empty() || !args.month_days.is_empty())
-    {
-        bail!("daily recurrence cannot use --repeat-weekday or --repeat-month-day");
-    }
-    if frequency != EventRepeatArg::Monthly && !args.month_days.is_empty() {
-        bail!("--repeat-month-day requires --repeat monthly");
-    }
-    if !args.weekdays.is_empty() && !args.month_days.is_empty() {
-        bail!("--repeat-weekday and --repeat-month-day cannot be combined");
-    }
-    let mut month_days = args.month_days.clone();
-    month_days.sort_unstable();
-    month_days.dedup();
-    if let Some(value) = month_days
-        .iter()
-        .find(|value| **value == 0 || value.unsigned_abs() > 31)
-    {
-        bail!("--repeat-month-day must be from 1 through 31 or -1 through -31: {value}");
-    }
-    let mut weekdays = args
-        .weekdays
-        .iter()
-        .map(|value| EventRecurrenceWeekdayReport {
-            weekday: event_weekday_number(*value),
-            week_number: 0,
-        })
-        .collect::<Vec<_>>();
-    weekdays.sort_by_key(|value| value.weekday);
-    weekdays.dedup_by_key(|value| value.weekday);
-    let start = parse_start_datetime_in_time_zone(start_input, time_zone)
-        .context("invalid recurrence anchor")?;
-    let end = if let Some(count) = args.count {
-        EventRecurrenceEndReport {
-            kind: "count".to_string(),
-            occurrence_count: Some(count),
-            end_date: None,
-        }
-    } else if let Some(until) = args.until.as_deref() {
-        let until = DateTime::parse_from_rfc3339(until)
-            .context("--repeat-until must be RFC3339 with an explicit UTC offset")?
-            .with_timezone(&Local);
-        let stored_until = canonical_eventkit_recurrence_end_utc(&until.to_rfc3339())?;
-        let stored_until_local = DateTime::parse_from_rfc3339(&stored_until)
-            .context("canonical EventKit recurrence end must be RFC3339")?
-            .with_timezone(&Local);
-        if stored_until_local < start {
-            bail!("--repeat-until must not be before the event start");
-        }
-        EventRecurrenceEndReport {
-            kind: "date".to_string(),
-            occurrence_count: None,
-            end_date: Some(stored_until),
-        }
-    } else {
-        EventRecurrenceEndReport {
-            kind: "never".to_string(),
-            occurrence_count: None,
-            end_date: None,
-        }
-    };
-    Ok(Some(EventRecurrenceReport {
-        frequency: match frequency {
-            EventRepeatArg::Daily => "daily",
-            EventRepeatArg::Weekly => "weekly",
-            EventRepeatArg::Monthly => "monthly",
-            EventRepeatArg::Yearly => "yearly",
-        }
-        .to_string(),
-        interval,
-        first_day_of_week: if frequency == EventRepeatArg::Weekly && interval > 1 {
-            2
-        } else {
-            0
-        },
-        end,
-        days_of_week: (!weekdays.is_empty()).then_some(weekdays),
-        days_of_month: (!month_days.is_empty()).then_some(month_days),
-        months_of_year: None,
-        weeks_of_year: None,
-        days_of_year: None,
-        set_positions: None,
-    }))
-}
-
-fn event_weekday_number(value: EventWeekdayArg) -> isize {
-    match value {
-        EventWeekdayArg::Sunday => 1,
-        EventWeekdayArg::Monday => 2,
-        EventWeekdayArg::Tuesday => 3,
-        EventWeekdayArg::Wednesday => 4,
-        EventWeekdayArg::Thursday => 5,
-        EventWeekdayArg::Friday => 6,
-        EventWeekdayArg::Saturday => 7,
-    }
-}
-
 fn read_json_add_draft(path: &Path) -> Result<JsonAddDraft> {
     let contents = fs::read(path)
         .with_context(|| format!("failed to read JSON event file {}", path.display()))?;
@@ -650,22 +541,6 @@ fn validate_json_selector(draft: &JsonAddDraft) -> Result<()> {
     }
     if (draft.calendar_source.is_some() || draft.source_id.is_some()) && draft.calendar.is_none() {
         bail!("JSON calendar_source and source_id require calendar");
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_recurring_all_day_inputs(
-    all_day: bool,
-    recurring: bool,
-    start: &str,
-    end: &str,
-) -> Result<()> {
-    if all_day
-        && recurring
-        && (NaiveDate::parse_from_str(start, "%Y-%m-%d").is_err()
-            || NaiveDate::parse_from_str(end, "%Y-%m-%d").is_err())
-    {
-        bail!("recurring all-day events require date-only --start and --end values");
     }
     Ok(())
 }
@@ -845,81 +720,6 @@ fn add_event(input: AddEventInput) -> Result<WriteEventResult> {
     report.start_input = Some(input.start);
     report.end_input = Some(input.end);
     Ok(WriteEventResult::Written(Box::new(report)))
-}
-
-fn duplicate_recurrence_policy_error(
-    input: &AddEventInput,
-    duplicates: &[EventItem],
-) -> Result<Option<String>> {
-    let [existing] = duplicates else {
-        return Ok(None);
-    };
-    let details = read_event_details(&existing.identifier, Some(existing.start_date))?;
-    let recurrence_matches =
-        recurrence_rules_match(input.recurrence.as_ref(), &details.recurrence_rules);
-    if !recurrence_matches {
-        return Ok(Some(format!(
-            "matching event [{}] has a different recurrence rule; refusing to treat it as the same event",
-            existing.identifier
-        )));
-    }
-    if input.if_exists == IfExistsArg::Update && !details.recurrence_rules.is_empty() {
-        return Ok(Some(
-            "--if-exists update for a recurring match requires explicit series scope; use skip for an identical rule or use the update command with an explicit occurrence and scope"
-                .to_string(),
-        ));
-    }
-    Ok(None)
-}
-
-pub(crate) fn recurrence_rules_match(
-    requested: Option<&EventRecurrenceReport>,
-    existing: &[EventRecurrenceReport],
-) -> bool {
-    match requested {
-        Some(requested) => {
-            existing.len() == 1
-                && existing.first().is_some_and(|existing| {
-                    canonical_recurrence(existing) == canonical_recurrence(requested)
-                })
-        }
-        None => existing.is_empty(),
-    }
-}
-
-fn canonical_recurrence(rule: &EventRecurrenceReport) -> EventRecurrenceReport {
-    let mut rule = rule.clone();
-    rule.first_day_of_week = if rule.frequency == "weekly" && rule.interval > 1 {
-        if rule.first_day_of_week == 0 {
-            2
-        } else {
-            rule.first_day_of_week
-        }
-    } else {
-        0
-    };
-    if let Some(end_date) = rule.end.end_date.as_deref()
-        && let Ok(value) = canonical_eventkit_recurrence_end_utc(end_date)
-    {
-        rule.end.end_date = Some(value);
-    }
-    normalize_optional_vec(&mut rule.days_of_week);
-    normalize_optional_vec(&mut rule.days_of_month);
-    normalize_optional_vec(&mut rule.months_of_year);
-    normalize_optional_vec(&mut rule.weeks_of_year);
-    normalize_optional_vec(&mut rule.days_of_year);
-    normalize_optional_vec(&mut rule.set_positions);
-    rule
-}
-
-fn normalize_optional_vec<T: Ord>(values: &mut Option<Vec<T>>) {
-    if let Some(values) = values {
-        values.sort_unstable();
-        values.dedup();
-    }
-    if values.as_ref().is_some_and(Vec::is_empty) {
-        *values = None;
-    }
 }
 
 fn update_existing_from_add(
@@ -1240,158 +1040,8 @@ fn resolve_event_mutation_scope(
     }
 }
 
-pub(crate) fn authorized_events_manager() -> Result<EventsManager> {
-    match EventsManager::authorization_status() {
-        AuthorizationStatus::FullAccess => Ok(EventsManager::new()),
-        AuthorizationStatus::NotDetermined => {
-            let events = EventsManager::new();
-            match events.request_access() {
-                Ok(true) => Ok(events),
-                Ok(false) => bail!(
-                    "Calendar access was not granted (authorization=NotDetermined); run `icalctl calendars` from Terminal.app, iTerm, or Ghostty and approve the macOS Calendar prompt"
-                ),
-                Err(error) => bail!(crate::doctor::access_request_error_message(&error)),
-            }
-        }
-        AuthorizationStatus::WriteOnly => {
-            bail!(
-                "Calendar access is write-only (authorization=WriteOnly); enable Full Calendar Access in System Settings > Privacy & Security > Calendars, then run `icalctl doctor --json`"
-            )
-        }
-        AuthorizationStatus::Denied => {
-            bail!(
-                "Calendar access is denied (authorization=Denied); enable Full Calendar Access in System Settings > Privacy & Security > Calendars, then run `icalctl doctor --json`"
-            )
-        }
-        AuthorizationStatus::Restricted => {
-            bail!(
-                "Calendar access is restricted (authorization=Restricted); ask the device administrator to allow Calendar access, then run `icalctl doctor --json`"
-            )
-        }
-    }
-}
-
-pub(crate) fn ensure_valid_event_range(start: DateTime<Local>, end: DateTime<Local>) -> Result<()> {
-    if start >= end {
-        bail!("event start must be before event end");
-    }
-    Ok(())
-}
-
 fn nullable_patch(value: Option<&str>, clear: bool) -> Option<Option<&str>> {
     if clear { Some(None) } else { value.map(Some) }
-}
-
-pub(crate) fn resolve_target_calendar(
-    events: &EventsManager,
-    args: &WriteCalendarSelectorArgs,
-    allow_default: bool,
-) -> Result<CalendarInfo> {
-    Ok(resolve_target_calendar_with_selection(events, args, allow_default)?.0)
-}
-
-pub(crate) fn resolve_target_calendar_with_selection(
-    events: &EventsManager,
-    args: &WriteCalendarSelectorArgs,
-    allow_default: bool,
-) -> Result<(CalendarInfo, CalendarSelection)> {
-    if write_selector_is_empty(args) {
-        if !allow_default {
-            bail!("a calendar selector is required");
-        }
-        if let Some(calendar_id) = crate::config::default_calendar_id()? {
-            let calendars = list_calendars(events)?;
-            let ids = vec![calendar_id];
-            let calendar = require_single_writable_calendar(
-                &calendars,
-                &CalendarSelector {
-                    titles: &[],
-                    ids: &ids,
-                    source: None,
-                    source_id: None,
-                },
-            )?;
-            Ok((calendar, CalendarSelection::ConfiguredDefault))
-        } else {
-            let calendar = events
-                .default_calendar()
-                .context("no default calendar is available for new events")?;
-            Ok((calendar, CalendarSelection::EventkitDefault))
-        }
-    } else {
-        let calendars = list_calendars(events)?;
-        let titles: Vec<String> = args.calendar.iter().cloned().collect();
-        let ids: Vec<String> = args.calendar_id.iter().cloned().collect();
-        let calendar = require_single_writable_calendar(
-            &calendars,
-            &CalendarSelector {
-                titles: &titles,
-                ids: &ids,
-                source: args.calendar_source.as_deref(),
-                source_id: args.source_id.as_deref(),
-            },
-        )?;
-        Ok((calendar, CalendarSelection::Explicit))
-    }
-}
-
-fn write_selector_is_empty(args: &WriteCalendarSelectorArgs) -> bool {
-    args.calendar.is_none() && args.calendar_id.is_none()
-}
-
-#[cfg(test)]
-fn calendar_selection_for_write_with_config(
-    args: &WriteCalendarSelectorArgs,
-    has_configured_default: bool,
-) -> CalendarSelection {
-    if write_selector_is_empty(args) {
-        if has_configured_default {
-            CalendarSelection::ConfiguredDefault
-        } else {
-            CalendarSelection::EventkitDefault
-        }
-    } else {
-        CalendarSelection::Explicit
-    }
-}
-
-fn calendar_reports(calendars: &[CalendarInfo], default_id: Option<&str>) -> Vec<CalendarReport> {
-    calendars
-        .iter()
-        .map(|calendar| {
-            let mut report = CalendarReport::from(calendar);
-            report.is_default_for_new_events = default_id == Some(calendar.identifier.as_str());
-            report
-        })
-        .collect()
-}
-
-fn filter_calendar_list(
-    calendars: Vec<CalendarInfo>,
-    source: Option<&str>,
-    writable_only: bool,
-) -> Vec<CalendarInfo> {
-    calendars
-        .into_iter()
-        .filter(|calendar| source.is_none_or(|source| calendar.source.as_deref() == Some(source)))
-        .filter(|calendar| !writable_only || calendar.allows_modifications)
-        .collect()
-}
-
-fn event_calendar(events: &EventsManager, event: &EventItem) -> Result<CalendarInfo> {
-    let calendars = list_calendars(events)?;
-    event
-        .calendar_id
-        .as_deref()
-        .and_then(|id| calendars.iter().find(|calendar| calendar.identifier == id))
-        .or_else(|| {
-            event
-                .calendar_title
-                .as_deref()
-                .and_then(|title| calendars.iter().find(|calendar| calendar.title == title))
-        })
-        .cloned()
-        .context("event calendar is no longer available")
 }
 
 pub(crate) fn ensure_availability_supported(
@@ -1443,62 +1093,6 @@ fn patched_field_present(current: Option<&str>, patch: Option<Option<&str>>) -> 
         Some(value) => value.is_some(),
         None => current.is_some(),
     }
-}
-
-struct DuplicateQuery<'a> {
-    title: &'a str,
-    start: DateTime<Local>,
-    end: DateTime<Local>,
-    all_day: bool,
-    calendar_id: &'a str,
-    excluded_event_id: Option<&'a str>,
-    window_seconds: i64,
-}
-
-fn matching_events(events: &EventsManager, query: &DuplicateQuery<'_>) -> Result<Vec<EventItem>> {
-    let fetch_padding = query.window_seconds.max(1);
-    let candidates = events
-        .fetch_events(
-            query.start - chrono::Duration::seconds(fetch_padding),
-            query.end + chrono::Duration::seconds(fetch_padding),
-            None,
-        )
-        .context("failed to check for duplicate events")?;
-
-    Ok(candidates
-        .into_iter()
-        .filter(|event| query.excluded_event_id != Some(event.identifier.as_str()))
-        .filter(|event| event.title == query.title)
-        .filter(|event| event.all_day == query.all_day)
-        .filter(|event| {
-            datetime_within_window(event.start_date, query.start, query.window_seconds)
-                && datetime_within_window(event.end_date, query.end, query.window_seconds)
-        })
-        .filter(|event| event.calendar_id.as_deref() == Some(query.calendar_id))
-        .collect())
-}
-
-fn datetime_within_window(
-    candidate: DateTime<Local>,
-    expected: DateTime<Local>,
-    window_seconds: i64,
-) -> bool {
-    let limit_milliseconds = window_seconds.checked_mul(1_000).unwrap_or(i64::MAX);
-    (candidate - expected).num_milliseconds().abs() <= limit_milliseconds
-}
-
-fn duplicate_warnings(events: &[EventItem], window_seconds: i64) -> Vec<String> {
-    events
-        .iter()
-        .map(|event| {
-            format!(
-                "possible duplicate within {window_seconds} seconds: {:?} at {} [{}]",
-                event.title,
-                event.start_date.to_rfc3339(),
-                event.identifier
-            )
-        })
-        .collect()
 }
 
 fn ensure_event_calendar_writable(
@@ -1571,75 +1165,6 @@ pub(crate) fn replace_relative_alarms(
     add_relative_alarms(events, id, minutes_before)
 }
 
-fn event_report_with_alarms(
-    events: &EventsManager,
-    id: &str,
-    occurrence_start: Option<&str>,
-) -> Result<EventReport> {
-    let occurrence_start = occurrence_start
-        .map(parse_occurrence_start)
-        .transpose()
-        .with_context(|| format!("invalid occurrence start for event {id}"))?;
-    let event = match occurrence_start {
-        Some(start) => find_event_occurrence(events, id, start)?,
-        None => events
-            .get_event(id)
-            .with_context(|| format!("failed to reload event {id}"))?,
-    };
-    let details = read_event_details(id, occurrence_start)
-        .with_context(|| format!("failed to read alarms and recurrence for event {id}"))?;
-    let calendars = list_calendars(events)?;
-    let mut report = event_report(&event, &calendars);
-    report.alarm_count = Some(details.alarms.len());
-    report.alarms = Some(details.alarms);
-    report.recurrence_count = Some(details.recurrence_rules.len());
-    report.recurrence_rules = Some(details.recurrence_rules);
-    Ok(report)
-}
-
-fn parse_occurrence_start(value: &str) -> Result<DateTime<Local>> {
-    let value = DateTime::parse_from_rfc3339(value)
-        .context("occurrence start must be RFC3339 with an explicit UTC offset")?;
-    let seconds = value
-        .timestamp_nanos_opt()
-        .map(|value| value / 1_000_000_000)
-        .unwrap_or_else(|| value.timestamp_millis() / 1_000);
-    Utc.timestamp_opt(seconds, 0)
-        .single()
-        .map(|value| value.with_timezone(&Local))
-        .context("occurrence start is outside the supported date range")
-}
-
-fn find_event_occurrence(
-    events: &EventsManager,
-    id: &str,
-    occurrence_start: DateTime<Local>,
-) -> Result<EventItem> {
-    let matches = events
-        .fetch_events(
-            occurrence_start - chrono::Duration::seconds(1),
-            occurrence_start + chrono::Duration::seconds(1),
-            None,
-        )
-        .with_context(|| format!("failed to query occurrence for event {id}"))?
-        .into_iter()
-        .filter(|event| {
-            event.identifier == id && event.start_date.timestamp() == occurrence_start.timestamp()
-        })
-        .collect::<Vec<_>>();
-    match matches.as_slice() {
-        [event] => Ok(event.clone()),
-        [] => bail!(
-            "no occurrence of event {id} starts at {}; refresh the event list or verify --occurrence-start",
-            occurrence_start.to_rfc3339()
-        ),
-        _ => bail!(
-            "multiple occurrences of event {id} start at {}; refusing to choose",
-            occurrence_start.to_rfc3339()
-        ),
-    }
-}
-
 fn confirm_delete(event: &EventItem, scope: Option<&str>) -> Result<()> {
     let mut stderr = io::stderr();
     let scope = match scope {
@@ -1668,126 +1193,10 @@ fn confirm_delete(event: &EventItem, scope: Option<&str>) -> Result<()> {
     }
 }
 
-fn fetch_range(
-    from: &str,
-    to: &str,
-    selector: &ReadCalendarSelectorArgs,
-) -> Result<Vec<EventReport>> {
-    let start = parse_start_datetime(from).with_context(|| format!("invalid --from: {from}"))?;
-    let end = parse_end_datetime(to).with_context(|| format!("invalid --to: {to}"))?;
-    fetch_events(start, end, selector)
-}
-
-pub(crate) fn fetch_events(
-    start: DateTime<Local>,
-    end: DateTime<Local>,
-    selector: &ReadCalendarSelectorArgs,
-) -> Result<Vec<EventReport>> {
-    if start >= end {
-        bail!("--from must be before --to");
-    }
-
-    let events = authorized_events_manager()?;
-    let calendars = list_calendars(&events)?;
-    let selector = CalendarSelector {
-        titles: &selector.calendars,
-        ids: &selector.calendar_ids,
-        source: selector.calendar_source.as_deref(),
-        source_id: selector.source_id.as_deref(),
-    };
-    let selected_ids = if selector.is_empty() {
-        None
-    } else {
-        Some(
-            resolve_calendars(&calendars, &selector)?
-                .into_iter()
-                .map(|calendar| calendar.identifier)
-                .collect::<Vec<_>>(),
-        )
-    };
-
-    let reports = events
-        .fetch_events(start, end, None)
-        .context("failed to fetch events through EventKit")?
-        .into_iter()
-        .filter(|event| {
-            selected_ids.as_ref().is_none_or(|ids| {
-                event
-                    .calendar_id
-                    .as_ref()
-                    .is_some_and(|id| ids.contains(id))
-            })
-        })
-        .map(|event| event_report(&event, &calendars))
-        .collect();
-
-    Ok(reports)
-}
-
-fn list_calendars(events: &EventsManager) -> Result<Vec<CalendarInfo>> {
-    events
-        .list_calendars()
-        .context("failed to list calendars through EventKit")
-}
-
-fn event_report(event: &EventItem, calendars: &[CalendarInfo]) -> EventReport {
-    let mut report = EventReport::from(event);
-    if let Some(calendar) = event
-        .calendar_id
-        .as_deref()
-        .and_then(|id| calendars.iter().find(|calendar| calendar.identifier == id))
-    {
-        report.calendar_source = calendar.source.clone();
-        report.calendar_source_id = calendar.source_id.clone();
-        report.calendar_type = Some(format!("{:?}", calendar.calendar_type));
-        report.allows_calendar_modifications = Some(calendar.allows_modifications);
-    }
-    report
-}
-
-fn event_matches(event: &EventReport, query: &str) -> bool {
-    contains_query(&event.title, query)
-        || event
-            .notes
-            .as_deref()
-            .is_some_and(|value| contains_query(value, query))
-        || event
-            .location
-            .as_deref()
-            .is_some_and(|value| contains_query(value, query))
-        || event
-            .url
-            .as_deref()
-            .is_some_and(|value| contains_query(value, query))
-        || event
-            .calendar
-            .as_deref()
-            .is_some_and(|value| contains_query(value, query))
-}
-
-fn contains_query(value: &str, query: &str) -> bool {
-    value.to_lowercase().contains(query)
-}
-
-fn authorization_string() -> String {
-    format!("{:?}", EventsManager::authorization_status())
-}
-
-impl From<AvailabilityArg> for EventAvailability {
-    fn from(value: AvailabilityArg) -> Self {
-        match value {
-            AvailabilityArg::Busy => EventAvailability::Busy,
-            AvailabilityArg::Free => EventAvailability::Free,
-            AvailabilityArg::Tentative => EventAvailability::Tentative,
-            AvailabilityArg::Unavailable => EventAvailability::Unavailable,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eventkit::CalendarType;
+    use ::eventkit::CalendarType;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temporary_test_path(name: &str) -> PathBuf {
