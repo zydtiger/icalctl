@@ -1,13 +1,17 @@
-use crate::flightaware::FlightStatus;
+mod model;
+
 use crate::models::EventReport;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, FixedOffset, Utc};
-use serde::Serialize;
+pub use model::{
+    AirportMetadata, FlightFreshness, FlightPosition, FlightStatus, TravelAirport,
+    TravelCollection, TravelEventSource, TravelLeg, TravelMoment, TravelWarning,
+};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-const AIRPORTS_TSV: &str = include_str!("../assets/airports.tsv");
+const AIRPORTS_TSV: &str = include_str!("../../assets/airports.tsv");
 
 pub struct FlightInput<'a> {
     pub flight_number: &'a str,
@@ -25,62 +29,6 @@ pub struct FormattedFlight {
     pub start: String,
     pub end: String,
     pub notes: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct AirportMetadata {
-    pub iata_code: String,
-    pub icao_code: Option<String>,
-    pub name: String,
-    pub municipality: Option<String>,
-    pub latitude: f64,
-    pub longitude: f64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct TravelAirport {
-    pub code: String,
-    pub metadata: Option<AirportMetadata>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct TravelMoment {
-    pub scheduled: String,
-    pub utc: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct TravelEventSource {
-    pub event_id: String,
-    pub occurrence_date: Option<String>,
-    pub title: String,
-    pub calendar: Option<String>,
-    pub calendar_id: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct TravelLeg {
-    pub flight_number: String,
-    pub route: String,
-    pub departure_airport: TravelAirport,
-    pub arrival_airport: TravelAirport,
-    pub departure: TravelMoment,
-    pub arrival: TravelMoment,
-    pub live_status: Option<FlightStatus>,
-    pub source: TravelEventSource,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct TravelWarning {
-    pub kind: String,
-    pub event_id: Option<String>,
-    pub message: String,
-}
-
-#[derive(Debug, Default, PartialEq, Serialize)]
-pub struct TravelCollection {
-    pub legs: Vec<TravelLeg>,
-    pub warnings: Vec<TravelWarning>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

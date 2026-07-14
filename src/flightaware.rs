@@ -1,5 +1,8 @@
 use crate::config::FlightAwareConfig;
-use crate::travel::{TravelAirport, TravelCollection, TravelLeg, TravelWarning};
+use crate::travel::{
+    FlightFreshness, FlightPosition, FlightStatus, TravelAirport, TravelCollection, TravelLeg,
+    TravelWarning,
+};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Datelike, Duration, SecondsFormat, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -27,47 +30,6 @@ const QUERY_WINDOW_HOURS: i64 = 18;
 const MATCH_TOLERANCE_HOURS: i64 = 4;
 const MAX_BACKOFF_SECONDS: u64 = 24 * 60 * 60;
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct FlightStatus {
-    pub provider: String,
-    pub provider_flight_id: String,
-    pub status: String,
-    pub description: String,
-    pub scheduled_departure: Option<String>,
-    pub estimated_departure: Option<String>,
-    pub actual_departure: Option<String>,
-    pub scheduled_arrival: Option<String>,
-    pub estimated_arrival: Option<String>,
-    pub actual_arrival: Option<String>,
-    pub departure_delay_seconds: Option<i64>,
-    pub arrival_delay_seconds: Option<i64>,
-    pub departure_terminal: Option<String>,
-    pub departure_gate: Option<String>,
-    pub arrival_terminal: Option<String>,
-    pub arrival_gate: Option<String>,
-    pub tracking_ended: bool,
-    pub diverted: bool,
-    pub current_position: Option<FlightPosition>,
-    pub freshness: FlightFreshness,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FlightFreshness {
-    pub state: String,
-    pub fetched_at: String,
-    pub expires_at: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct FlightPosition {
-    pub latitude: f64,
-    pub longitude: f64,
-    pub timestamp: String,
-    pub altitude_feet: Option<i64>,
-    pub groundspeed_knots: Option<i64>,
-    pub heading_degrees: Option<i64>,
-}
 
 pub fn enrich_collection(config: &FlightAwareConfig, collection: &mut TravelCollection) {
     if !config.enabled || collection.legs.is_empty() {
