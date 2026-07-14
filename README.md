@@ -162,15 +162,19 @@ new version, update `Cargo.toml`, run the full checks, and reinstall with
 ### Install the agent skill
 
 The recommended way to install the bundled `icalctl` agent skill is to copy
-`SKILL.md` into `~/.agents/skills/icalctl-skill/`:
+`SKILL.md` and its guarded iTerm fallback helper into
+`~/.agents/skills/icalctl-skill/`:
 
 ```sh
-mkdir -p ~/.agents/skills/icalctl-skill
+mkdir -p ~/.agents/skills/icalctl-skill/scripts
 cp SKILL.md ~/.agents/skills/icalctl-skill/SKILL.md
+cp scripts/icalctl-iterm-fallback.sh \
+  ~/.agents/skills/icalctl-skill/scripts/icalctl-iterm-fallback.sh
+chmod +x ~/.agents/skills/icalctl-skill/scripts/icalctl-iterm-fallback.sh
 ```
 
-Run these commands from the project root. Copy the file again after updating
-the repository to keep the installed skill current.
+Run these commands from the project root. Copy both files again after updating
+the repository to keep the installed skill and helper current.
 
 ## Permissions
 
@@ -178,8 +182,8 @@ the repository to keep the installed skill current.
 Mach-O binary through `embed_plist`. macOS authorizes the two EventKit stores
 independently.
 
-Run the first permission test from a normal terminal such as Terminal.app,
-iTerm, or Ghostty:
+To request the first permissions yourself, run these commands manually in a
+normal terminal such as Terminal.app, iTerm, or Ghostty:
 
 ```sh
 icalctl calendars
@@ -202,12 +206,16 @@ icalctl doctor --json
 
 `doctor` reports both authorization states, executable path and process id,
 launch terminal, embedded Info.plist keys, and status-specific next commands.
-If an embedded launcher cannot show a privacy prompt, run `icalctl calendars`
-or `icalctl reminders lists` from Terminal.app, iTerm, or Ghostty.
+When the bundled agent skill encounters an embedded launcher that cannot show
+a privacy prompt, it follows the guarded iTerm fallback documented in
+`SKILL.md`; it does not automate another terminal. If that fallback fails, run
+`icalctl calendars` or `icalctl reminders lists` manually from Terminal.app,
+iTerm, or Ghostty.
 
 For a stale denied permission entry, first try enabling Full Calendar Access in
 System Settings > Privacy & Security > Calendars. If necessary, reset this
-binary's Calendar decision and request it again from a normal terminal:
+binary's Calendar decision and request it again manually from a normal
+terminal:
 
 ```sh
 tccutil reset Calendar dev.zyd.icalctl
