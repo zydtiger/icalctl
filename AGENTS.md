@@ -9,15 +9,19 @@ Calendar writes are real user-data mutations. Preserve the confirmation and cale
 ## Agent Skill Installation
 
 The recommended installation for the bundled agent skill is to copy the
-project's `SKILL.md` to `~/.agents/skills/icalctl-skill/SKILL.md`:
+project's `SKILL.md` and guarded iTerm fallback helper into
+`~/.agents/skills/icalctl-skill/`:
 
 ```sh
-mkdir -p ~/.agents/skills/icalctl-skill
+mkdir -p ~/.agents/skills/icalctl-skill/scripts
 cp SKILL.md ~/.agents/skills/icalctl-skill/SKILL.md
+cp scripts/icalctl-iterm-fallback.sh \
+  ~/.agents/skills/icalctl-skill/scripts/icalctl-iterm-fallback.sh
+chmod +x ~/.agents/skills/icalctl-skill/scripts/icalctl-iterm-fallback.sh
 ```
 
-Run these commands from the project root, and copy the file again after
-updating the repository so the installed skill stays current.
+Run these commands from the project root, and copy both files again after
+updating the repository so the installed skill and helper stay current.
 
 ## Git Commit Prefixes
 
