@@ -1377,31 +1377,15 @@ calendar.
 ## Architecture
 
 ```text
-clap CLI
-  -> command dispatcher
-  -> event adapter via eventkit-rs
-  -> public reminder adapter via objc2-event-kit
-  -> macOS Calendar and Reminders stores
+CLI parsing and dispatch
+  -> Calendar / Reminders / Travel / Configuration domains
+  -> EventKit / ReminderKit / FlightAware / loopback-server adapters
+  -> macOS stores, provider APIs, and the bundled travel interface
 ```
 
-Main modules:
-
-- `src/cli.rs`: command and flag definitions
-- `src/calendar.rs`: EventKit read/write operations
-- `src/calendar_selector.rs`: stable id/source/title selector resolution
-- `src/eventkit_bridge.rs`: exact-calendar-id EventKit writes through `objc2`
-- `src/cache.rs`: last-list row cache
-- `src/dates.rs`: local date parsing
-- `src/models.rs`: JSON/report structs
-- `src/output.rs`: human-readable formatting
-- `src/reminders.rs`: testable read service, list selectors, filters, and
-  public-only EventKit reminder bridge
-- `src/travel.rs`: canonical flight formatting/parsing and airport metadata
-- `src/flightaware.rs`: deterministic provider matching, normalized cache,
-  quota ledger, and adaptive backoff
-- `src/travel_server.rs`: capability-protected loopback JSON/UI server
-- `assets/web/`: bundled MapLibre travel interface and vendored CSP assets
-- `tests/eventkit_manual.rs`: opt-in real EventKit verification with strict safeguards
+The detailed module responsibilities, dependency direction, compatibility
+contracts, and refactor rules are documented in
+[`docs/architecture.md`](docs/architecture.md).
 
 `eventkit-rs` remains the high-level event wrapper. Reminders use generated
 `objc2-event-kit` bindings directly because this project must preserve

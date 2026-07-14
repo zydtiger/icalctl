@@ -1,21 +1,17 @@
 #[cfg(target_os = "macos")]
 embed_plist::embed_info_plist!("../Info.plist");
 
-mod batch;
 mod cache;
 mod calendar;
-mod calendar_selector;
 mod cli;
 mod config;
 mod dates;
 mod doctor;
-mod eventkit_bridge;
 pub mod flightaware;
 mod models;
 mod output;
 mod reminders;
 pub mod travel;
-mod travel_server;
 mod version;
 
 use anyhow::{Context, Result};
@@ -34,7 +30,7 @@ fn main() -> Result<ExitCode> {
         Command::Travel {
             command: TravelCommand::Serve { calendar_ids },
         } => {
-            travel_server::serve(calendar_ids, json)?;
+            travel::server::serve(calendar_ids, json)?;
             return Ok(ExitCode::SUCCESS);
         }
         command => command,

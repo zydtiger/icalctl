@@ -1,8 +1,9 @@
 use crate::calendar::{
-    authorized_events_manager, availability_name, ensure_availability_supported,
-    ensure_valid_event_range, parse_event_recurrence, recurrence_rules_match,
-    replace_relative_alarms, resolve_target_calendar_with_selection, validate_alarm_minutes,
-    validate_recurring_all_day_inputs,
+    authorized_events_manager, availability_name, create_event_in_calendar,
+    ensure_availability_supported, ensure_valid_event_range, parse_event_recurrence,
+    read_event_details, recurrence_rules_match, replace_relative_alarms,
+    resolve_target_calendar_with_selection, update_event_calendar_metadata, validate_alarm_minutes,
+    validate_event_time_zone, validate_event_url, validate_recurring_all_day_inputs,
 };
 use crate::cli::{
     AvailabilityArg, EventJsonRecurrence, EventRecurrenceArgs, IfExistsArg,
@@ -11,10 +12,6 @@ use crate::cli::{
 use crate::dates::{
     datetime_in_time_zone, parse_end_datetime_in_time_zone, parse_start_datetime_in_time_zone,
     utc_datetime, validate_time_zone,
-};
-use crate::eventkit_bridge::{
-    create_event_in_calendar, read_event_details, update_event_calendar_metadata,
-    validate_event_time_zone, validate_event_url,
 };
 use crate::models::{
     BatchErrorReport, BatchItemReport, BatchReport, BatchSummaryReport, CalendarSelection,

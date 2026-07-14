@@ -1,0 +1,417 @@
+use super::airports::*;
+use super::collection::*;
+use super::flight::*;
+use super::parser::*;
+use crate::models::EventReport;
+use chrono::{DateTime, Utc};
+
+fn example(extra_notes: Option<&str>) -> FlightInput<'_> {
+    FlightInput {
+        flight_number: "HO1607",
+        from_airport: "PVG",
+        to_airport: "HEL",
+        departure: "2026-07-11T09:25:00+08:00",
+        arrival: "2026-07-11T14:00:00+03:00",
+        extra_notes,
+    }
+}
+
+fn event(
+    id: &str,
+    flight_number: &str,
+    from_airport: &str,
+    to_airport: &str,
+    departure: &str,
+    arrival: &str,
+    occurrence_date: Option<&str>,
+) -> EventReport {
+    let formatted = format_flight(FlightInput {
+        flight_number,
+        from_airport,
+        to_airport,
+        departure,
+        arrival,
+        extra_notes: None,
+    })
+    .unwrap();
+    let departure_datetime = DateTime::parse_from_rfc3339(departure).unwrap();
+    let arrival_datetime = DateTime::parse_from_rfc3339(arrival).unwrap();
+
+    EventReport {
+        id: id.to_string(),
+        title: formatted.title,
+        start: departure.to_string(),
+        end: arrival.to_string(),
+        start_input: None,
+        end_input: None,
+        start_utc: departure_datetime.with_timezone(&Utc).to_rfc3339(),
+        end_utc: arrival_datetime.with_timezone(&Utc).to_rfc3339(),
+        start_local: departure.to_string(),
+        end_local: arrival.to_string(),
+        start_in_event_time_zone: None,
+        end_in_event_time_zone: None,
+        duration_seconds: (arrival_datetime - departure_datetime).num_seconds(),
+        all_day: false,
+        calendar: Some("Travel".to_string()),
+        calendar_id: Some("calendar-id".to_string()),
+        calendar_source: Some("iCloud".to_string()),
+        calendar_source_id: Some("source-id".to_string()),
+        calendar_type: Some("CalDav".to_string()),
+        allows_calendar_modifications: Some(true),
+        calendar_selection: None,
+        write_action: None,
+        write_scope: None,
+        location: Some(formatted.location),
+        notes: Some(formatted.notes),
+        url: None,
+        status: "Confirmed".to_string(),
+        availability: "Busy".to_string(),
+        has_notes: true,
+        has_url: false,
+        alarm_count: Some(0),
+        recurrence_count: Some(0),
+        recurrence_rules: None,
+        is_detached: occurrence_date.is_some(),
+        occurrence_date: occurrence_date.map(str::to_string),
+        creation_date: None,
+        last_modified_date: None,
+        external_identifier: None,
+        timezone: None,
+        attachments_count: 0,
+        attendees: Vec::new(),
+        organizer: None,
+        alarms: None,
+    }
+}
+
+#[test]
+fn formats_the_canonical_flight_event_exactly() {
+    let flight = format_flight(example(None)).unwrap();
+
+    assert_eq!(flight.title, "Flight HO1607: PVG to HEL");
+    assert_eq!(flight.location, "PVG to HEL");
+    assert_eq!(flight.start, "2026-07-11T09:25:00+08:00");
+    assert_eq!(flight.end, "2026-07-11T14:00:00+03:00");
+    assert_eq!(
+        flight.notes,
+        "Flight: HO1607\nRoute: PVG to HEL\nDeparture: PVG 2026-07-11T09:25:00+08:00\nArrival: HEL 2026-07-11T14:00:00+03:00"
+    );
+}
+
+#[test]
+fn normalizes_identifiers_and_appends_extra_notes_after_one_blank_line() {
+    let flight = format_flight(FlightInput {
+        flight_number: "  ho1607 ",
+        from_airport: " pvg ",
+        to_airport: " hel ",
+        extra_notes: Some("Booking: ABC123\nSeat: 4A\n"),
+        ..example(None)
+    })
+    .unwrap();
+
+    assert_eq!(flight.title, "Flight HO1607: PVG to HEL");
+    assert!(flight.notes.ends_with("\n\nBooking: ABC123\nSeat: 4A\n"));
+}
+
+#[test]
+fn rejects_invalid_airport_codes() {
+    let short = format_flight(FlightInput {
+        from_airport: "PV",
+        ..example(None)
+    });
+    let non_alpha = format_flight(FlightInput {
+        to_airport: "H3L",
+        ..example(None)
+    });
+    let long = format_flight(FlightInput {
+        to_airport: "HELLO",
+        ..example(None)
+    });
+
+    assert!(short.is_err());
+    assert!(non_alpha.is_err());
+    assert!(long.is_err());
+}
+
+#[test]
+fn rejects_timezone_less_timestamps() {
+    let error = format_flight(FlightInput {
+        departure: "2026-07-11T09:25:00",
+        ..example(None)
+    })
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("explicit UTC offset"));
+}
+
+#[test]
+fn compares_absolute_instants_not_displayed_local_clocks() {
+    let error = format_flight(FlightInput {
+        departure: "2026-07-11T09:25:00+08:00",
+        arrival: "2026-07-11T03:00:00+03:00",
+        ..example(None)
+    })
+    .unwrap_err()
+    .to_string();
+
+    assert_eq!(error, "arrival instant must be after departure instant");
+}
+
+#[test]
+fn rejects_empty_flight_numbers() {
+    let error = format_flight(FlightInput {
+        flight_number: "  ",
+        ..example(None)
+    })
+    .unwrap_err()
+    .to_string();
+
+    assert_eq!(error, "flight number must not be empty");
+}
+
+#[test]
+fn parses_formatted_notes_and_accepts_free_form_crlf_suffixes() {
+    let formatted = format_flight(example(Some("Booking: ABC123\nSeat: 4A"))).unwrap();
+    let parsed = parse_flight_notes(&formatted.notes).unwrap();
+    let crlf = format_flight(example(Some("Booking: ABC123\r\nSeat: 4A"))).unwrap();
+
+    assert_eq!(parsed.flight_number, "HO1607");
+    assert_eq!(parsed.from_airport, "PVG");
+    assert_eq!(parsed.to_airport, "HEL");
+    assert_eq!(parsed.departure.to_rfc3339(), "2026-07-11T09:25:00+08:00");
+    assert_eq!(parsed.arrival.to_rfc3339(), "2026-07-11T14:00:00+03:00");
+    assert_eq!(
+        parsed.departure.with_timezone(&Utc).to_rfc3339(),
+        "2026-07-11T01:25:00+00:00"
+    );
+    assert!(parse_flight_notes(&crlf.notes).is_ok());
+}
+
+#[test]
+fn rejects_noncanonical_headers_and_single_newline_extra_text() {
+    let formatted = format_flight(example(None)).unwrap();
+    let wrong_header = formatted.notes.replacen("Route: ", "Route : ", 1);
+    let single_newline = format!("{}\nSeat: 4A", formatted.notes);
+
+    assert!(
+        parse_flight_notes(&wrong_header)
+            .unwrap_err()
+            .to_string()
+            .contains("Route line")
+    );
+    assert!(
+        parse_flight_notes(&single_newline)
+            .unwrap_err()
+            .to_string()
+            .contains("exactly four")
+    );
+}
+
+#[test]
+fn rejects_route_mismatches_but_uses_calendar_event_times() {
+    let formatted = format_flight(example(None)).unwrap();
+    let wrong_airport = formatted
+        .notes
+        .replacen("Departure: PVG", "Departure: FRA", 1);
+    assert!(
+        parse_flight_notes(&wrong_airport)
+            .unwrap_err()
+            .to_string()
+            .contains("must match")
+    );
+
+    let mut report = event(
+        "event-1",
+        "HO1607",
+        "PVG",
+        "HEL",
+        "2026-07-11T09:25:00+08:00",
+        "2026-07-11T14:00:00+03:00",
+        None,
+    );
+    report.start_utc = "2026-07-11T01:30:00+00:00".to_string();
+    let (leg, warnings) = travel_leg_from_event(&report).unwrap();
+
+    assert_eq!(leg.departure.utc, "2026-07-11T01:30:00+00:00");
+    assert_eq!(leg.departure.scheduled, "2026-07-11T09:30:00+08:00");
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].kind, "calendar_time_mismatch");
+}
+
+#[test]
+fn tolerates_eventkit_subsecond_truncation_and_reports_it() {
+    let mut report = event(
+        "event-fractional",
+        "HO1607",
+        "PVG",
+        "HEL",
+        "2026-07-11T09:25:00.750+08:00",
+        "2026-07-11T14:00:00.500+03:00",
+        None,
+    );
+    report.start_utc = "2026-07-11T01:25:00+00:00".to_string();
+    report.end_utc = "2026-07-11T11:00:00+00:00".to_string();
+
+    let (leg, warnings) = travel_leg_from_event(&report).unwrap();
+
+    assert_eq!(leg.departure.utc, report.start_utc);
+    assert_eq!(leg.arrival.utc, report.end_utc);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].kind, "calendar_time_mismatch");
+}
+
+#[test]
+fn resolves_iata_and_icao_codes_from_bundled_airport_metadata() {
+    let expectations = [
+        ("PVG", "PVG", 31.1434, 121.805),
+        ("HEL", "HEL", 60.318363, 24.963341),
+        ("FRA", "FRA", 50.026706, 8.55835),
+        ("ZSPD", "PVG", 31.1434, 121.805),
+    ];
+
+    for (lookup, iata, latitude, longitude) in expectations {
+        let airport = airport_for_code(lookup);
+        let metadata = airport.metadata.unwrap();
+        assert_eq!(metadata.iata_code, iata);
+        assert!((metadata.latitude - latitude).abs() < 0.000001);
+        assert!((metadata.longitude - longitude).abs() < 0.000001);
+    }
+}
+
+#[test]
+fn retains_valid_legs_when_airport_metadata_is_unknown() {
+    let report = event(
+        "event-unknown",
+        "HO1607",
+        "ZZZZ",
+        "HEL",
+        "2026-07-11T09:25:00+08:00",
+        "2026-07-11T14:00:00+03:00",
+        None,
+    );
+
+    let collection = collect_travel_events(&[report]);
+
+    assert_eq!(collection.legs.len(), 1);
+    assert_eq!(collection.legs[0].departure_airport.code, "ZZZZ");
+    assert!(collection.legs[0].departure_airport.metadata.is_none());
+    assert_eq!(collection.warnings.len(), 1);
+    assert_eq!(collection.warnings[0].kind, "unknown_airport");
+}
+
+#[test]
+fn sorts_chronologically_and_deduplicates_only_exact_occurrences() {
+    let early = event(
+        "event-early",
+        "AY141",
+        "FRA",
+        "HEL",
+        "2026-07-10T09:00:00+02:00",
+        "2026-07-10T12:20:00+03:00",
+        None,
+    );
+    let occurrence_one = event(
+        "recurring-event",
+        "HO1607",
+        "PVG",
+        "HEL",
+        "2026-07-11T09:25:00+08:00",
+        "2026-07-11T14:00:00+03:00",
+        Some("2026-07-11T01:25:00+00:00"),
+    );
+    let occurrence_one_duplicate = event(
+        "recurring-event",
+        "HO1607",
+        "PVG",
+        "HEL",
+        "2026-07-11T09:25:00+08:00",
+        "2026-07-11T14:00:00+03:00",
+        Some("2026-07-11T01:25:00+00:00"),
+    );
+    let occurrence_two = event(
+        "recurring-event",
+        "HO1608",
+        "HEL",
+        "FRA",
+        "2026-07-12T10:00:00+03:00",
+        "2026-07-12T11:40:00+02:00",
+        Some("2026-07-12T07:00:00+00:00"),
+    );
+
+    let collection = collect_travel_events(&[
+        occurrence_two,
+        occurrence_one_duplicate,
+        early,
+        occurrence_one,
+    ]);
+
+    assert_eq!(collection.legs.len(), 3);
+    assert_eq!(
+        collection
+            .legs
+            .iter()
+            .map(|leg| leg.flight_number.as_str())
+            .collect::<Vec<_>>(),
+        ["AY141", "HO1607", "HO1608"]
+    );
+}
+
+#[test]
+fn reports_malformed_candidates_but_ignores_ordinary_events() {
+    let mut malformed = event(
+        "event-malformed",
+        "HO1607",
+        "PVG",
+        "HEL",
+        "2026-07-11T09:25:00+08:00",
+        "2026-07-11T14:00:00+03:00",
+        None,
+    );
+    malformed.notes = Some("Flight: HO1607\nRoute: broken".to_string());
+    let mut ordinary = event(
+        "event-ordinary",
+        "HO1607",
+        "PVG",
+        "HEL",
+        "2026-07-11T09:25:00+08:00",
+        "2026-07-11T14:00:00+03:00",
+        None,
+    );
+    ordinary.title = "Flight training".to_string();
+    ordinary.notes = None;
+
+    let collection = collect_travel_events(&[ordinary, malformed]);
+
+    assert!(collection.legs.is_empty());
+    assert_eq!(collection.warnings.len(), 1);
+    assert_eq!(collection.warnings[0].kind, "malformed_flight_event");
+    assert_eq!(
+        collection.warnings[0].event_id.as_deref(),
+        Some("event-malformed")
+    );
+}
+
+#[test]
+fn serialized_legs_do_not_expose_free_form_calendar_notes() {
+    let mut report = event(
+        "event-private-notes",
+        "HO1607",
+        "PVG",
+        "HEL",
+        "2026-07-11T09:25:00+08:00",
+        "2026-07-11T14:00:00+03:00",
+        None,
+    );
+    report
+        .notes
+        .as_mut()
+        .unwrap()
+        .push_str("\n\nBooking reference: PRIVATE123");
+
+    let collection = collect_travel_events(&[report]);
+    let serialized = serde_json::to_string(&collection).unwrap();
+
+    assert!(!serialized.contains("PRIVATE123"));
+    assert!(!serialized.contains("extra_notes"));
+}
