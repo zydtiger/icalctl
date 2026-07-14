@@ -577,12 +577,15 @@ pub(super) fn update_event(input: UpdateEventInput) -> Result<WriteEventResult> 
     Ok(WriteEventResult::Written(Box::new(report)))
 }
 
-pub(super) fn delete_event(
+pub(super) fn delete_event<F>(
     reference: &str,
     occurrence_start: Option<String>,
     requested_scope: Option<EventScopeArg>,
-    force: bool,
-) -> Result<DeletedReport> {
+    confirm: F,
+) -> Result<DeletedReport>
+where
+    F: FnOnce(&EventItem, Option<&str>) -> Result<()>,
+{
     let reference = resolve_event_show_ref(reference, occurrence_start)?;
     let id = reference.id;
     let occurrence_start = reference
@@ -607,9 +610,7 @@ pub(super) fn delete_event(
         resolve_event_mutation_scope(recurring, occurrence_start.is_some(), requested_scope)?;
     ensure_event_calendar_writable(&events, &event, "delete")?;
 
-    if !force {
-        confirm_delete(&event, scope)?;
-    }
+    confirm(&event, scope)?;
 
     delete_event_scoped(&id, occurrence_start, span)
         .with_context(|| format!("failed to delete event {id}"))?;
@@ -767,32 +768,4 @@ pub(crate) fn replace_relative_alarms(
             .with_context(|| format!("failed to remove alarm {index} from event {id}"))?;
     }
     add_relative_alarms(events, id, minutes_before)
-}
-
-pub(super) fn confirm_delete(event: &EventItem, scope: Option<&str>) -> Result<()> {
-    let mut stderr = io::stderr();
-    let scope = match scope {
-        Some("occurrence") => "only this recurring occurrence",
-        Some("future") => "this recurring occurrence and all future occurrences",
-        _ => "this event",
-    };
-    writeln!(
-        stderr,
-        "Delete {scope}: \"{}\" ({})?",
-        event.title,
-        event_time_range(&EventReport::from(event))
-    )?;
-    write!(stderr, "Type delete to confirm: ")?;
-    stderr.flush()?;
-
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .context("failed to read delete confirmation")?;
-
-    if input.trim() == "delete" {
-        Ok(())
-    } else {
-        bail!("delete cancelled")
-    }
 }

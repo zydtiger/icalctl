@@ -44,7 +44,6 @@ use crate::models::{
     CalendarReport, CalendarSelection, DeletedReport, EventDraftReport, EventRecurrenceEndReport,
     EventRecurrenceReport, EventRecurrenceWeekdayReport, EventReport, JsonOutput, StatusReport,
 };
-use crate::output::event_time_range;
 use ::eventkit::{
     AlarmInfo, AlarmProximity, AuthorizationStatus, CalendarInfo, EventAvailability, EventDraft,
     EventItem, EventKitError, EventPatch, EventSpan, EventsManager,

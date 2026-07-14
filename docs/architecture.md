@@ -32,18 +32,18 @@ src/
     collection.rs      event conversion, warnings, sorting, and deduplication
     airports.rs        bundled airport metadata
     service.rs         Calendar discovery and optional enrichment orchestration
-    flightaware/
-      client.rs        HTTP transport and provider response types
-      matching.rs      deterministic flight candidate selection
-      normalization.rs provider-to-domain status and position conversion
-      cache.rs         normalized cache persistence and stale fallback
-      quota.rs         cross-process quota accounting and backoff
     server/
       security.rs      capability and request-origin validation
       routing.rs       method and path dispatch
       api.rs           versioned response construction
       range.rs         strict inclusive date-range parsing
       assets.rs        embedded frontend delivery and content types
+  flightaware/         FlightAware adapter over provider-neutral travel models
+    client.rs          HTTP transport and provider response types
+    matching.rs        deterministic flight candidate selection
+    normalization.rs   provider-to-domain status and position conversion
+    cache.rs           normalized cache persistence and stale fallback
+    quota.rs           cross-process quota accounting and backoff
   config/              schema, persistence, validation, and CLI operations
   models/              shared serialization and report types
   output/              human-readable rendering
@@ -57,7 +57,9 @@ are separate responsibilities.
 
 The refactor toward this layout follows these dependency rules:
 
-- Domain logic must not depend on CLI argument structs.
+- Clap definitions stay under `cli/`. Calendar and Reminders dispatch accept
+  those parsed inputs at their command boundary, while provider, adapter, and
+  presentation modules remain independent of Clap parsing behavior.
 - Travel's canonical flight and itinerary models must remain provider-neutral.
   The FlightAware adapter converts provider data into those models; travel code
   does not reach into FlightAware response types.

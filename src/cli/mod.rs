@@ -6,11 +6,20 @@ mod shared;
 mod tests;
 mod travel;
 
-pub use self::calendar::*;
-pub use self::config::*;
-pub use self::reminders::*;
-pub use self::shared::*;
-pub use self::travel::*;
+pub(crate) use self::calendar::{
+    BatchCommand, EventJsonRecurrence, EventRecurrenceArgs, ReadCalendarSelectorArgs,
+    WriteCalendarSelectorArgs,
+};
+pub(crate) use self::config::ConfigCommand;
+pub(crate) use self::reminders::{
+    ReadReminderListSelectorArgs, ReminderAdvancedScheduleArgs, ReminderBatchCommand,
+    ReminderGeofenceProximityArg, ReminderPriorityArg, ReminderReadFilterArgs, ReminderRepeatArg,
+    ReminderStateArg, RemindersCommand, WriteReminderListSelectorArgs,
+};
+pub(crate) use self::shared::{
+    AvailabilityArg, EventRepeatArg, EventScopeArg, EventWeekdayArg, IfExistsArg,
+};
+pub(crate) use self::travel::TravelCommand;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};

@@ -1,4 +1,33 @@
 use super::*;
+use crate::output::event_time_range;
+
+fn confirm_delete(event: &EventItem, scope: Option<&str>) -> Result<()> {
+    let mut stderr = io::stderr();
+    let scope = match scope {
+        Some("occurrence") => "only this recurring occurrence",
+        Some("future") => "this recurring occurrence and all future occurrences",
+        _ => "this event",
+    };
+    writeln!(
+        stderr,
+        "Delete {scope}: \"{}\" ({})?",
+        event.title,
+        event_time_range(&EventReport::from(event))
+    )?;
+    write!(stderr, "Type delete to confirm: ")?;
+    stderr.flush()?;
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .context("failed to read delete confirmation")?;
+
+    if input.trim() == "delete" {
+        Ok(())
+    } else {
+        bail!("delete cancelled")
+    }
+}
 
 pub fn run(command: Command) -> Result<JsonOutput> {
     match command {
@@ -250,7 +279,13 @@ pub fn run(command: Command) -> Result<JsonOutput> {
             scope,
             force,
         } => {
-            let deleted = delete_event(&id, occurrence_start, scope, force)?;
+            let deleted = delete_event(&id, occurrence_start, scope, |event, resolved_scope| {
+                if force {
+                    Ok(())
+                } else {
+                    confirm_delete(event, resolved_scope)
+                }
+            })?;
             Ok(JsonOutput::Deleted { deleted })
         }
         Command::Completions { .. } => unreachable!("completions are handled before calendar run"),
