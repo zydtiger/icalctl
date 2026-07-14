@@ -28,6 +28,7 @@ integer timeout_seconds=60
 integer operation_deadline=0
 integer cleanup_deadline=0
 integer close_attempts=0
+integer create_attempted=0
 
 print_usage() {
     print -u2 -- "usage: ${0:t} ICALCTL_EXECUTABLE [ARG ...]"
@@ -52,10 +53,11 @@ terminate_process() {
 }
 
 run_bounded() {
-    integer deadline=$1
-    local captured_stdout=$2
-    local captured_stderr=$3
-    shift 3
+    local phase=$1
+    integer deadline=$2
+    local captured_stdout=$3
+    local captured_stderr=$4
+    shift 4
 
     : >"$captured_stdout" || return 126
     : >"$captured_stderr" || return 126
@@ -65,11 +67,23 @@ run_bounded() {
 
     "$@" >"$captured_stdout" 2>"$captured_stderr" &
     active_pid=$!
+    integer create_grace_deadline=0
     while kill -0 "$active_pid" >/dev/null 2>&1; do
         if (( interrupted || SECONDS >= deadline )); then
-            terminate_process "$active_pid"
-            active_pid=0
-            return 124
+            if [[ "$phase" == "create" ]]; then
+                if (( create_grace_deadline == 0 )); then
+                    create_grace_deadline=$(( SECONDS + 2 ))
+                fi
+                if (( SECONDS >= create_grace_deadline )); then
+                    terminate_process "$active_pid"
+                    active_pid=0
+                    return 124
+                fi
+            else
+                terminate_process "$active_pid"
+                active_pid=0
+                return 124
+            fi
         fi
         sleep 0.1
     done
@@ -93,7 +107,7 @@ restore_frontmost_application() {
         return 1
     fi
 
-    run_bounded "$deadline" "$automation_stdout" "$automation_stderr" \
+    run_bounded restore "$deadline" "$automation_stdout" "$automation_stderr" \
         "$osascript_bin" - "$bundle_identifier" "$ITERM_BUNDLE_IDENTIFIER" <<'RESTORE_APPLESCRIPT'
 use framework "AppKit"
 use scripting additions
@@ -142,8 +156,8 @@ recover_delegated_window_id() {
     if (( resolve_deadline > cleanup_deadline )); then
         resolve_deadline=$cleanup_deadline
     fi
-    run_bounded "$resolve_deadline" "$automation_stdout" "$automation_stderr" \
-        "$osascript_bin" - "$ownership_token" "$tty_file" "$window_id_file" <<'RESOLVE_APPLESCRIPT'
+    run_bounded resolve "$resolve_deadline" "$automation_stdout" "$automation_stderr" \
+        "$osascript_bin" - "$ownership_token" "$window_id_file" <<'RESOLVE_APPLESCRIPT'
 use scripting additions
 
 on persistValue(pathValue, textValue)
@@ -152,12 +166,7 @@ end persistValue
 
 on run argv
     set ownershipToken to item 1 of argv
-    set ttyPath to item 2 of argv
-    set windowIdPath to item 3 of argv
-    set expectedTty to ""
-    try
-        set expectedTty to do shell script "/bin/cat " & quoted form of ttyPath
-    end try
+    set windowIdPath to item 2 of argv
 
     set matchedIds to {}
     tell application "iTerm"
@@ -167,13 +176,7 @@ on run argv
             try
                 set tokenMatches to ((variable candidateSession named "user.icalctlFallback") is ownershipToken)
             end try
-            set ttyMatches to false
-            if expectedTty is not "" then
-                try
-                    set ttyMatches to ((tty of candidateSession) is expectedTty)
-                end try
-            end if
-            if tokenMatches or ttyMatches then set end of matchedIds to id of candidateWindow
+            if tokenMatches then set end of matchedIds to id of candidateWindow
         end repeat
     end tell
 
@@ -205,7 +208,7 @@ close_delegated_window() {
     if (( close_call_deadline > deadline )); then
         close_call_deadline=$deadline
     fi
-    run_bounded "$close_call_deadline" "$close_stdout" "$close_stderr" \
+    run_bounded close "$close_call_deadline" "$close_stdout" "$close_stderr" \
         "$osascript_bin" - "$window_id" "$ownership_token" "$close_focus_file" "$window_closed_file" <<'CLOSE_APPLESCRIPT'
 use framework "AppKit"
 use scripting additions
@@ -246,7 +249,7 @@ CLOSE_APPLESCRIPT
         if (( reconcile_deadline > deadline )); then
             reconcile_deadline=$deadline
         fi
-        run_bounded "$reconcile_deadline" "$automation_stdout" "$automation_stderr" \
+        run_bounded reconcile "$reconcile_deadline" "$automation_stdout" "$automation_stderr" \
             "$osascript_bin" - "$window_id" "$ownership_token" <<'RECONCILE_APPLESCRIPT'
 on run argv
     set delegatedWindowId to (item 1 of argv) as integer
@@ -297,17 +300,22 @@ cleanup() {
         terminate_process "$active_pid"
         active_pid=0
     fi
-    if [[ -n "$cancel_file" ]]; then
-        : >"$cancel_file" 2>/dev/null || true
-    fi
     interrupted=0
-    recover_delegated_window_id >/dev/null 2>&1 || true
+    integer recovered_window=0
+    if recover_delegated_window_id >/dev/null 2>&1; then
+        recovered_window=1
+    fi
     if [[ -f "$window_closed_file" ]]; then
         delegated_window_id=""
     fi
     if [[ -n "$delegated_window_id" && -n "$close_stdout" ]] && \
         (( close_attempts < 2 && SECONDS < cleanup_deadline )); then
         close_delegated_window "$delegated_window_id" "$cleanup_deadline" >/dev/null 2>&1 || true
+    elif (( create_attempted && ! recovered_window )); then
+        print -u2 -- "icalctl iTerm delegation cleanup warning: window ownership could not be verified; no unverified iTerm window was closed"
+    fi
+    if [[ -n "$cancel_file" ]]; then
+        : >"$cancel_file" 2>/dev/null || true
     fi
     if [[ -n "$temporary_directory" && -d "$temporary_directory" ]]; then
         rm -rf -- "$temporary_directory"
@@ -340,7 +348,7 @@ if [[ "$timeout_value" != <-> ]] || (( timeout_value <= 0 )); then
 fi
 timeout_seconds=$timeout_value
 operation_deadline=$(( SECONDS + timeout_seconds ))
-cleanup_deadline=$(( operation_deadline + 4 ))
+cleanup_deadline=$(( operation_deadline + 7 ))
 
 umask 077
 typeset temporary_parent="${TMPDIR:-/tmp}"
@@ -369,7 +377,7 @@ ownership_token="icalctl-$(/usr/bin/uuidgen)"
 : >"$stdout_file" || delegation_failure "could not create the stdout capture"
 : >"$stderr_file" || delegation_failure "could not create the stderr capture"
 
-run_bounded "$operation_deadline" "$automation_stdout" "$automation_stderr" \
+run_bounded availability "$operation_deadline" "$automation_stdout" "$automation_stderr" \
     "$osascript_bin" -e 'id of application "iTerm"'
 integer automation_status=$?
 if (( automation_status == 124 )); then
@@ -388,10 +396,15 @@ for argument in "$@"; do
 done
 readonly command_text="${(j: :)quoted_command}"
 readonly task_body="if : >${(qq)command_started_file}; then ${command_text} >${(qq)stdout_file} 2>${(qq)stderr_file}; _icalctl_status=\$?; else _icalctl_status=${DELEGATION_FAILURE}; fi; printf '%s\\n' \"\$_icalctl_status\" >${(qq)pending_status_file}; mv -f -- ${(qq)pending_status_file} ${(qq)status_file}"
-readonly bootstrap_body="umask 077; /usr/bin/tty >${(qq)tty_file}.pending && /bin/mv -f -- ${(qq)tty_file}.pending ${(qq)tty_file}; while [[ -d ${(qq)temporary_directory} && ! -e ${(qq)gate_file} && ! -e ${(qq)cancel_file} ]]; do /bin/sleep 0.05; done; if [[ ! -d ${(qq)temporary_directory} || -e ${(qq)cancel_file} ]]; then exit ${DELEGATION_FAILURE}; fi; ${task_body}"
+readonly bootstrap_body="umask 077; /usr/bin/tty >${(qq)tty_file}.pending && /bin/mv -f -- ${(qq)tty_file}.pending ${(qq)tty_file}; while [[ -d ${(qq)temporary_directory} && ! -e ${(qq)gate_file} && ! -e ${(qq)cancel_file} ]]; do /bin/sleep 0.05; done; if [[ ! -d ${(qq)temporary_directory} || -e ${(qq)cancel_file} ]]; then exit ${DELEGATION_FAILURE}; fi; ${task_body}; while [[ -d ${(qq)temporary_directory} && ! -e ${(qq)cancel_file} ]]; do /bin/sleep 0.05; done"
 
-run_bounded "$operation_deadline" "$automation_stdout" "$automation_stderr" \
-    "$osascript_bin" - "$create_focus_file" "$window_id_file" "$ownership_token" "$bootstrap_body" "$tty_file" "$timeout_seconds" <<'CREATE_APPLESCRIPT'
+integer create_timeout_seconds=$(( operation_deadline - SECONDS ))
+if (( create_timeout_seconds <= 0 )); then
+    delegation_failure "creating the hidden iTerm window timed out"
+fi
+create_attempted=1
+run_bounded create "$operation_deadline" "$automation_stdout" "$automation_stderr" \
+    "$osascript_bin" - "$create_focus_file" "$window_id_file" "$ownership_token" "$bootstrap_body" "$tty_file" "$create_timeout_seconds" <<'CREATE_APPLESCRIPT'
 use framework "AppKit"
 use scripting additions
 
@@ -418,10 +431,10 @@ on run argv
         with timeout of timeoutSeconds seconds
             tell application "iTerm"
                 set delegatedWindow to (create window with default profile command launchCommand)
-                set delegatedSession to current session of delegatedWindow
-                set variable delegatedSession named "user.icalctlFallback" to ownershipToken
                 set visible of delegatedWindow to false
                 if visible of delegatedWindow then error "delegated iTerm window remained visible"
+                set delegatedSession to current session of delegatedWindow
+                set variable delegatedSession named "user.icalctlFallback" to ownershipToken
                 set delegatedWindowId to id of delegatedWindow
             end tell
             my persistValue(windowIdPath, delegatedWindowId as text)
@@ -444,15 +457,17 @@ automation_status=$?
 recover_delegated_window_id >/dev/null 2>&1 || true
 
 if [[ -f "$create_focus_file" ]]; then
-    integer restore_deadline=$(( SECONDS + 1 ))
-    if (( restore_deadline > operation_deadline )); then
-        restore_deadline=$operation_deadline
+    integer restore_deadline=$(( SECONDS + 3 ))
+    integer reserved_close_deadline=$(( cleanup_deadline - 2 ))
+    if (( restore_deadline > reserved_close_deadline )); then
+        restore_deadline=$reserved_close_deadline
     fi
     integer create_was_interrupted=$interrupted
     interrupted=0
     restore_frontmost_application "$create_focus_file" "$restore_deadline"
     integer focus_restore_status=$?
-    interrupted=$create_was_interrupted
+    integer restore_was_interrupted=$interrupted
+    interrupted=$(( create_was_interrupted || restore_was_interrupted ))
 else
     integer focus_restore_status=1
 fi

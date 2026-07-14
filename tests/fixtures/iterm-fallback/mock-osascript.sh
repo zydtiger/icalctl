@@ -39,6 +39,12 @@ if grep -Fq "runningApplicationsWithBundleIdentifier" <<<"$script"; then
                 exit 1
             fi
             ;;
+        restore_signals_parent)
+            if (( restore_count == 1 )); then
+                print -r -- "restore-signalled-parent:${bundle_identifier}" >>"$log"
+                kill -TERM "$PPID"
+            fi
+            ;;
         user_focus_change)
             print -r -- "third-app-left-frontmost" >>"$log"
             print -r -- "focus-not-stolen" >>"$log"
@@ -50,7 +56,7 @@ if grep -Fq "runningApplicationsWithBundleIdentifier" <<<"$script"; then
 fi
 
 if grep -Fq "could not uniquely resolve delegated iTerm window" <<<"$script"; then
-    typeset window_id_file=$4
+    typeset window_id_file=$3
     print -r -- "resolve-by-ownership" >>"$log"
     if [[ -f "$state_file" && "$(<"$state_file")" == "owned" ]]; then
         print -r -- "4242" >"$window_id_file"
@@ -64,7 +70,7 @@ if grep -Fq 'return "owned"' <<<"$script"; then
     print -r -- "reconcile:${2}" >>"$log"
     if [[ ! -f "$state_file" || "$(<"$state_file")" == "gone" ]]; then
         print -r -- "gone"
-    elif [[ "$(<"$state_file")" == "different" ]]; then
+    elif [[ "$(<"$state_file")" == "different" || "$(<"$state_file")" == "unowned" ]]; then
         print -r -- "different"
     else
         print -r -- "owned"
@@ -75,14 +81,18 @@ fi
 run_bootstrap() {
     local bootstrap_body=$1
     local command_started_file=$2
+    local capture_directory=${command_started_file:h}
     (
-        /bin/zsh -lc "$bootstrap_body"
+        while [[ -d "$capture_directory" && ! -f "$command_started_file" ]]; do
+            sleep 0.01
+        done
         if [[ -f "$command_started_file" ]]; then
             print -r -- "task-started" >>"$log"
         else
             print -r -- "bootstrap-cancelled" >>"$log"
         fi
     ) &
+    /bin/zsh -lc "$bootstrap_body" &
 }
 
 if grep -Fq "create window with default profile command launchCommand" <<<"$script"; then
@@ -106,6 +116,14 @@ if grep -Fq "create window with default profile command launchCommand" <<<"$scri
         print -r -- "create-script-end"
     } >>"$log"
 
+    integer hide_line=$(grep -nF "set visible of delegatedWindow to false" <<<"$script" | head -1 | cut -d: -f1)
+    integer ownership_line=$(grep -nF 'set variable delegatedSession named "user.icalctlFallback"' <<<"$script" | head -1 | cut -d: -f1)
+    integer persist_line=$(grep -nF "persistValue(windowIdPath" <<<"$script" | head -1 | cut -d: -f1)
+    if (( hide_line == 0 || ownership_line == 0 || persist_line == 0 || hide_line >= ownership_line || ownership_line >= persist_line )); then
+        print -r -- "invalid-create-order" >>"$log"
+        exit 1
+    fi
+
     case "$mode" in
         create_failure)
             print -r -- "create-failed" >>"$log"
@@ -114,7 +132,7 @@ if grep -Fq "create window with default profile command launchCommand" <<<"$scri
     esac
 
     print -r -- "created:4242" >>"$log"
-    print -r -- "owned" >"$state_file"
+    print -r -- "unowned" >"$state_file"
     print -r -- "/dev/ttys999" >"$tty_file"
     case "$mode" in
         timeout|missing_status)
@@ -137,14 +155,27 @@ if grep -Fq "create window with default profile command launchCommand" <<<"$scri
             sleep 20
             exit 0
             ;;
+        pre_hide_signal_wait)
+            print -r -- "waiting-before-hide" >>"$log"
+            sleep 20
+            exit 0
+            ;;
         create_error_close_failure)
+            print -r -- "owned" >"$state_file"
             print -r -- "error-close-failed:4242" >>"$log"
             exit 1
             ;;
         pre_hide_hang)
+            sleep 1.2
             print -r -- "internal-timeout-before-hide" >>"$log"
             print -r -- "gone" >"$state_file"
             print -r -- "error-close:4242" >>"$log"
+            exit 1
+            ;;
+        pre_hide_error_close_failure)
+            sleep 1.2
+            print -r -- "internal-timeout-before-hide" >>"$log"
+            print -r -- "error-close-failed:4242" >>"$log"
             exit 1
             ;;
         visibility_failure)
@@ -162,6 +193,7 @@ if grep -Fq "create window with default profile command launchCommand" <<<"$scri
     esac
 
     print -r -- "ownership-set:4242" >>"$log"
+    print -r -- "owned" >"$state_file"
     print -r -- "hidden:4242" >>"$log"
     print -r -- "4242" >"$window_id_file"
     print -r -- "window-id-persisted:4242" >>"$log"
@@ -188,6 +220,18 @@ fi
     print -r -- "close-script-end"
 } >>"$log"
 
+if [[ "$mode" == "window_id_reused" ]]; then
+    print -r -- "different" >"$state_file"
+fi
+typeset ownership_state="gone"
+if [[ -f "$state_file" ]]; then
+    ownership_state=$(<"$state_file")
+fi
+if [[ "$ownership_state" == "different" || "$ownership_state" == "unowned" ]]; then
+    print -r -- "close-refused:${window_id}" >>"$log"
+    exit 1
+fi
+
 case "$mode" in
     close_failure)
         exit 1
@@ -208,7 +252,6 @@ case "$mode" in
         exit 0
         ;;
     window_id_reused)
-        print -r -- "different" >"$state_file"
         exit 1
         ;;
     *)

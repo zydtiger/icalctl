@@ -148,6 +148,7 @@ assert_contains "only the delegated window id is closed" "close:4242" "$case_log
 assert_contains "close targets a window by id" "first window whose id is delegatedWindowId" "$case_log"
 assert_contains "the default profile is given an explicit local command" "explicit-command-override" "$case_log"
 assert_contains "the delegated window receives an ownership token" "ownership-set:4242" "$case_log"
+assert_not_contains "the window is hidden before ownership and id bookkeeping" "invalid-create-order" "$case_log"
 assert_not_contains "the helper never types into a profile-defined shell" "write text commandText" "$helper"
 assert_temporary_files_cleaned "success removes temporary files"
 
@@ -205,12 +206,52 @@ assert_not_contains "visibility failure never releases the guarded command" "tas
 assert_temporary_files_cleaned "visibility failure removes temporary files"
 
 new_case
-run_helper pre_hide_hang /usr/bin/true
+ICALCTL_ITERM_FALLBACK_TIMEOUT_SECONDS=1 run_helper pre_hide_hang /usr/bin/true
 assert_equal "pre-hide automation timeout uses delegation-failure status" 125 "$run_status"
+assert_contains "pre-hide timeout is allowed to reach its AppleScript error handler" "internal-timeout-before-hide" "$case_log"
 assert_contains "pre-hide timeout runs the AppleScript error close" "error-close:4242" "$case_log"
+assert_contains "pre-hide timeout restores the captured frontmost application" "focus-restored:com.example.FrontApp" "$case_log"
 assert_not_contains "pre-hide timeout never persists an unsafe window id" "window-id-persisted:4242" "$case_log"
 assert_not_contains "pre-hide timeout never starts the guarded command" "task-started" "$case_log"
 assert_temporary_files_cleaned "pre-hide timeout removes temporary files"
+
+new_case
+ICALCTL_ITERM_FALLBACK_TIMEOUT_SECONDS=1 run_helper pre_hide_error_close_failure /usr/bin/true
+assert_equal "failed pre-hide error close uses delegation-failure status" 125 "$run_status"
+assert_contains "failed error close is exercised after the internal timeout" "error-close-failed:4242" "$case_log"
+assert_contains "unowned pre-hide cleanup reports its conservative skip" "window ownership could not be verified" "$case_stderr"
+assert_not_contains "unowned pre-hide cleanup never guesses a window to close" "close:4242" "$case_log"
+assert_contains "failed pre-hide close still restores the captured frontmost application" "focus-restored:com.example.FrontApp" "$case_log"
+assert_not_contains "failed pre-hide error close never starts the guarded command" "task-started" "$case_log"
+assert_temporary_files_cleaned "failed pre-hide error close removes temporary files"
+
+new_case
+TMPDIR="$case_tmp" \
+    ICALCTL_ITERM_FALLBACK_TESTING=1 \
+    ICALCTL_ITERM_FALLBACK_OSASCRIPT="$mock_osascript" \
+    ICALCTL_ITERM_FALLBACK_TIMEOUT_SECONDS=20 \
+    MOCK_OSASCRIPT_MODE=pre_hide_signal_wait \
+    MOCK_OSASCRIPT_LOG="$case_log" \
+    "$helper" /usr/bin/true >"$case_stdout" 2>"$case_stderr" &
+integer pre_hide_interrupted_pid=$!
+integer pre_hide_signal_waits=0
+while ! grep -Fq "waiting-before-hide" "$case_log"; do
+    sleep 0.1
+    (( pre_hide_signal_waits += 1 ))
+    if (( pre_hide_signal_waits > 30 )); then
+        break
+    fi
+done
+kill -TERM "$pre_hide_interrupted_pid"
+wait "$pre_hide_interrupted_pid"
+run_status=$?
+assert_equal "pre-hide interruption uses delegation-failure status" 125 "$run_status"
+assert_not_contains "pre-hide interruption occurs before ownership is set" "ownership-set:4242" "$case_log"
+assert_contains "pre-hide interruption reports unverified ownership" "window ownership could not be verified" "$case_stderr"
+assert_not_contains "pre-hide interruption never closes an unverified window" "close:4242" "$case_log"
+assert_contains "pre-hide interruption restores the captured frontmost application" "focus-restored:com.example.FrontApp" "$case_log"
+assert_not_contains "pre-hide interruption never starts the guarded command" "task-started" "$case_log"
+assert_temporary_files_cleaned "pre-hide interruption removes temporary files"
 
 new_case
 run_helper post_hide_persist_hang /usr/bin/true
@@ -245,6 +286,14 @@ assert_contains "interruption closes only its delegated window" "close:4242" "$c
 assert_temporary_files_cleaned "interruption removes temporary files"
 
 new_case
+run_helper restore_signals_parent /usr/bin/true
+assert_equal "a signal racing with successful focus restoration is preserved" 125 "$run_status"
+assert_contains "the restore mock signals the helper before returning" "restore-signalled-parent:com.example.FrontApp" "$case_log"
+assert_not_contains "a post-restore signal prevents command execution" "task-started" "$case_log"
+assert_contains "post-restore interruption closes the owned delegated window" "window-closed:4242" "$case_log"
+assert_temporary_files_cleaned "post-restore interruption removes temporary files"
+
+new_case
 ICALCTL_ITERM_FALLBACK_TIMEOUT_SECONDS=1 run_helper availability_hang /usr/bin/true
 assert_equal "hung availability check uses delegation-failure status" 125 "$run_status"
 assert_contains "hung availability check is bounded" "checking iTerm availability timed out" "$case_stderr"
@@ -263,8 +312,8 @@ new_case
 ICALCTL_ITERM_FALLBACK_TIMEOUT_SECONDS=1 run_helper create_effect_before_response_hang /usr/bin/true
 assert_equal "create effect followed by an AppleEvent hang fails safely" 125 "$run_status"
 assert_contains "effect-before-response creation is exercised" "create-effect-before-response" "$case_log"
-assert_contains "an unpersisted window is resolved by its ownership evidence" "resolve-by-ownership" "$case_log"
-assert_contains "the recovered exact window is closed" "close:4242" "$case_log"
+assert_contains "effect-before-response reports missing ownership evidence" "window ownership could not be verified" "$case_stderr"
+assert_not_contains "effect-before-response never guesses a window to close" "close:4242" "$case_log"
 assert_not_contains "the guarded command is cancelled before execution" "task-started" "$case_log"
 assert_temporary_files_cleaned "effect-before-response failure removes temporary files"
 
@@ -274,6 +323,7 @@ assert_equal "a failed create-time error close uses delegation-failure status" 1
 assert_contains "the create error close failure is exercised" "error-close-failed:4242" "$case_log"
 assert_contains "cleanup resolves the orphan candidate by ownership" "resolve-by-ownership" "$case_log"
 assert_contains "cleanup closes the owned window" "close:4242" "$case_log"
+assert_contains "owned cleanup records the close effect" "window-closed:4242" "$case_log"
 assert_temporary_files_cleaned "failed create-time close removes temporary files"
 
 new_case
