@@ -161,20 +161,20 @@ new version, update `Cargo.toml`, run the full checks, and reinstall with
 
 ### Install the agent skill
 
-The recommended way to install the bundled `icalctl` agent skill is to copy
-`SKILL.md` and its guarded iTerm fallback helper into
-`~/.agents/skills/icalctl-skill/`:
+The bundled `icalctl` agent skill is a complete directory containing its
+guarded iTerm fallback helper. Install and pin it globally with `skillctl`:
 
 ```sh
-mkdir -p ~/.agents/skills/icalctl-skill/scripts
-cp SKILL.md ~/.agents/skills/icalctl-skill/SKILL.md
-cp scripts/icalctl-iterm-fallback.sh \
-  ~/.agents/skills/icalctl-skill/scripts/icalctl-iterm-fallback.sh
-chmod +x ~/.agents/skills/icalctl-skill/scripts/icalctl-iterm-fallback.sh
+skillctl --global add https://github.com/zydtiger/icalctl.git \
+  --path skills/icalctl \
+  --name icalctl-skill \
+  --ref dev
 ```
 
-Run these commands from the project root. Copy both files again after updating
-the repository to keep the installed skill and helper current.
+After this directory-based installation, use
+`skillctl --global update icalctl-skill` to advance it. A legacy installation
+that selected only the repository-root `SKILL.md` must be removed and added
+again once to adopt the complete directory.
 
 ## Permissions
 
@@ -208,9 +208,9 @@ icalctl doctor --json
 launch terminal, embedded Info.plist keys, and status-specific next commands.
 When the bundled agent skill encounters an embedded launcher that cannot show
 a privacy prompt, it follows the guarded iTerm fallback documented in
-`SKILL.md`; it does not automate another terminal. If that fallback fails, run
-`icalctl calendars` or `icalctl reminders lists` manually from Terminal.app,
-iTerm, or Ghostty.
+`skills/icalctl/SKILL.md`; it does not automate another terminal. If that
+fallback fails, run `icalctl calendars` or `icalctl reminders lists` manually
+from Terminal.app, iTerm, or Ghostty.
 
 For a stale denied permission entry, first try enabling Full Calendar Access in
 System Settings > Privacy & Security > Calendars. If necessary, reset this

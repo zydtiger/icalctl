@@ -1,0 +1,32 @@
+version: 2
+skills:
+  clean-context-code-audit:
+    mode: vendored
+    source:
+      repository: git@gitea:tigerding/agent-workflows.git
+      path: skills/clean-context-code-audit
+      ref: main
+    resolved:
+      commit: bf5be1c665bea9f2e523b8adcc52fb58e618cee5
+      digest: sha256:6d599fe475a61842206f56339565513651e9865dbcd3cfed0fc1a30f57162b65
+    destination: clean-context-code-audit
+  issue-delivery:
+    mode: vendored
+    source:
+      repository: git@gitea:tigerding/agent-workflows.git
+      path: skills/issue-delivery
+      ref: main
+    resolved:
+      commit: bf5be1c665bea9f2e523b8adcc52fb58e618cee5
+      digest: sha256:5fa04deef9e6f2bdd32a82710a578099a05afa44f883d36ffa103e56f019a834
+    destination: issue-delivery
+  issue-discovery:
+    mode: vendored
+    source:
+      repository: git@gitea:tigerding/agent-workflows.git
+      path: skills/issue-discovery
+      ref: main
+    resolved:
+      commit: bf5be1c665bea9f2e523b8adcc52fb58e618cee5
+      digest: sha256:6cd979bcbe0d4aee5edbde4f8a14250eb31f2cf7453d1460de8186cd5246a9b1
+    destination: issue-discovery

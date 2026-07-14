@@ -25,7 +25,8 @@ icalctl version --json
 Treat `Cargo.toml`'s package version as the semantic-version source. The
 version report also includes the embedded Git commit when available, target
 triple, and build profile. Reinstall an updated checkout with
-`cargo install --path . --force`; copying `SKILL.md` does not update the binary.
+`cargo install --path . --force`; updating this skill directory does not update
+the binary.
 
 ## Operating Rules
 

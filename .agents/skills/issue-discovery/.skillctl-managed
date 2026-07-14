@@ -1,0 +1,6 @@
+version: 1
+entry: issue-discovery
+scope: project
+lock: .agents/skills.lock.yaml
+repository: git@gitea:tigerding/agent-workflows.git
+commit: bf5be1c665bea9f2e523b8adcc52fb58e618cee5

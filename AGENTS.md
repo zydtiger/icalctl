@@ -4,24 +4,39 @@
 
 `icalctl` is an Apple Silicon macOS CLI written in Rust for reading and managing the local Apple Calendar store through EventKit. It works with calendars already configured in Calendar.app, including iCloud, Google, Exchange, and local calendars. Human-readable output is the default; `--json` is the scripting and agent interface.
 
-Calendar writes are real user-data mutations. Preserve the confirmation and calendar-selection safeguards documented in `SKILL.md`, and prefer exact EventKit calendar ids in automated workflows.
+Calendar writes are real user-data mutations. Preserve the confirmation and calendar-selection safeguards documented in `skills/icalctl/SKILL.md`, and prefer exact EventKit calendar ids in automated workflows.
 
 ## Agent Skill Installation
 
-The recommended installation for the bundled agent skill is to copy the
-project's `SKILL.md` and guarded iTerm fallback helper into
-`~/.agents/skills/icalctl-skill/`:
+The bundled agent skill is a complete directory containing its guarded iTerm
+fallback helper. Install and pin it globally with `skillctl`:
 
 ```sh
-mkdir -p ~/.agents/skills/icalctl-skill/scripts
-cp SKILL.md ~/.agents/skills/icalctl-skill/SKILL.md
-cp scripts/icalctl-iterm-fallback.sh \
-  ~/.agents/skills/icalctl-skill/scripts/icalctl-iterm-fallback.sh
-chmod +x ~/.agents/skills/icalctl-skill/scripts/icalctl-iterm-fallback.sh
+skillctl --global add https://github.com/zydtiger/icalctl.git \
+  --path skills/icalctl \
+  --name icalctl-skill \
+  --ref dev
 ```
 
-Run these commands from the project root, and copy both files again after
-updating the repository so the installed skill and helper stay current.
+After this directory-based installation, use
+`skillctl --global update icalctl-skill` to advance it. A legacy installation
+that selected only the repository-root `SKILL.md` must be removed and added
+again once to adopt the complete directory.
+
+## Project Skill Dependencies
+
+`.agents/skills.lock.yaml` pins the shared workflows that this repository's
+issue process requires:
+
+- `$issue-discovery` drafts and creates approved GitHub issues;
+- `$issue-delivery` implements existing issues through the required worktree,
+  review, publication, and cleanup gates;
+- `$clean-context-code-audit` supplies the independent review gate used by
+  fixes and implementation phases.
+
+Treat their vendored directories and `.skillctl-managed` markers as read-only.
+Make shared changes in the `agent-workflows` warehouse, then apply them here
+with `skillctl update`. Run `skillctl check` before relying on these workflows.
 
 ## Git Commit Prefixes
 
@@ -43,8 +58,9 @@ Keep each commit focused. Use a lowercase prefix, omit a trailing period, and ad
 
 Use GitHub Issues as the canonical backlog for planned features, bugs, and other
 actionable work. Do not recreate already resolved historical items as GitHub
-issues. Document current behavior in `README.md` and `SKILL.md`; use commits and
-pull requests for implementation history.
+issues. Document current behavior in `README.md` and
+`skills/icalctl/SKILL.md`; use commits and pull requests for implementation
+history.
 
 ### Drafting and creating issues
 
