@@ -1011,6 +1011,488 @@ pub fn print_completions(shell: Shell) {
 mod tests {
     use super::*;
 
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    fn stable_hash(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(FNV_OFFSET_BASIS, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+        })
+    }
+
+    fn append_help(command: &mut clap::Command, path: &str, output: &mut Vec<u8>) {
+        output.extend_from_slice(path.as_bytes());
+        output.push(b'\n');
+        command.write_long_help(&mut *output).unwrap();
+        output.extend_from_slice(b"\n---\n");
+
+        for child in command.get_subcommands_mut() {
+            let child_path = format!("{path} {}", child.get_name());
+            append_help(child, &child_path, output);
+        }
+    }
+
+    fn command_paths(command: &clap::Command, prefix: &str, output: &mut Vec<String>) {
+        for child in command.get_subcommands() {
+            let path = format!("{prefix} {}", child.get_name());
+            output.push(path.clone());
+            command_paths(child, &path, output);
+        }
+    }
+
+    fn completion_hash(shell: Shell) -> u64 {
+        let mut command = Cli::command();
+        let name = command.get_name().to_string();
+        let mut output = Vec::new();
+        generate(shell, &mut command, name, &mut output);
+        stable_hash(&output)
+    }
+
+    fn assert_contract_error(base: &[&str], extra: &[&str], kind: clap::error::ErrorKind) {
+        let error = Cli::try_parse_from(base.iter().chain(extra).copied()).unwrap_err();
+        assert_eq!(error.kind(), kind, "argv: {base:?} + {extra:?}");
+    }
+
+    #[test]
+    fn command_tree_is_stable() {
+        let mut paths = Vec::new();
+        command_paths(&Cli::command(), "icalctl", &mut paths);
+
+        assert_eq!(
+            paths,
+            [
+                "icalctl config",
+                "icalctl config path",
+                "icalctl config init",
+                "icalctl config show",
+                "icalctl config validate",
+                "icalctl config edit",
+                "icalctl config get",
+                "icalctl config set",
+                "icalctl config unset",
+                "icalctl version",
+                "icalctl status",
+                "icalctl doctor",
+                "icalctl calendars",
+                "icalctl default-calendar",
+                "icalctl list",
+                "icalctl today",
+                "icalctl upcoming",
+                "icalctl show",
+                "icalctl search",
+                "icalctl add",
+                "icalctl update",
+                "icalctl batch",
+                "icalctl batch add",
+                "icalctl travel",
+                "icalctl travel serve",
+                "icalctl travel flight",
+                "icalctl reminders",
+                "icalctl reminders status",
+                "icalctl reminders lists",
+                "icalctl reminders default-list",
+                "icalctl reminders list",
+                "icalctl reminders search",
+                "icalctl reminders show",
+                "icalctl reminders add",
+                "icalctl reminders batch",
+                "icalctl reminders batch add",
+                "icalctl reminders update",
+                "icalctl reminders complete",
+                "icalctl reminders uncomplete",
+                "icalctl reminders delete",
+                "icalctl delete",
+                "icalctl completions",
+            ]
+        );
+    }
+
+    #[test]
+    fn long_help_contract_is_stable() {
+        let mut command = Cli::command();
+        let mut output = Vec::new();
+        append_help(&mut command, "icalctl", &mut output);
+
+        assert_eq!(stable_hash(&output), 17_482_121_679_375_552_753);
+    }
+
+    #[test]
+    fn generated_shell_completions_are_stable() {
+        assert_eq!(
+            [
+                completion_hash(Shell::Bash),
+                completion_hash(Shell::Elvish),
+                completion_hash(Shell::Fish),
+                completion_hash(Shell::PowerShell),
+                completion_hash(Shell::Zsh),
+            ],
+            [
+                18_329_766_573_192_339_178,
+                6_548_920_715_031_450_731,
+                8_934_612_081_613_975_269,
+                17_633_123_951_638_291_442,
+                10_859_355_139_673_504_805,
+            ]
+        );
+    }
+
+    #[test]
+    fn argument_relationship_contract_is_stable() {
+        use clap::error::ErrorKind::{ArgumentConflict, MissingRequiredArgument};
+
+        const TODAY: &[&str] = &["icalctl", "today"];
+        const EVENT_ADD: &[&str] = &[
+            "icalctl",
+            "add",
+            "Trip",
+            "--start",
+            "2026-07-14T10:00+02:00",
+            "--end",
+            "2026-07-14T11:00+02:00",
+        ];
+        const EVENT_UPDATE: &[&str] = &["icalctl", "update", "event-id"];
+        const REMINDER_LIST: &[&str] = &["icalctl", "reminders", "list"];
+        const REMINDER_ADD: &[&str] = &["icalctl", "reminders", "add", "Task"];
+        const REMINDER_UPDATE: &[&str] = &["icalctl", "reminders", "update", "reminder-id"];
+
+        // Read and write Calendar selector requirements and conflicts.
+        assert_contract_error(
+            TODAY,
+            &["--calendar-source", "iCloud"],
+            MissingRequiredArgument,
+        );
+        assert_contract_error(TODAY, &["--source-id", "source"], MissingRequiredArgument);
+        assert_contract_error(
+            TODAY,
+            &[
+                "--calendar",
+                "Trips",
+                "--calendar-source",
+                "iCloud",
+                "--source-id",
+                "source",
+            ],
+            ArgumentConflict,
+        );
+        assert_contract_error(
+            EVENT_ADD,
+            &["--calendar-source", "iCloud"],
+            MissingRequiredArgument,
+        );
+        assert_contract_error(
+            EVENT_ADD,
+            &["--source-id", "source"],
+            MissingRequiredArgument,
+        );
+        assert_contract_error(
+            EVENT_ADD,
+            &["--calendar-id", "id", "--calendar", "Trips"],
+            ArgumentConflict,
+        );
+        assert_contract_error(
+            EVENT_ADD,
+            &[
+                "--calendar-id",
+                "id",
+                "--calendar",
+                "Trips",
+                "--calendar-source",
+                "iCloud",
+            ],
+            ArgumentConflict,
+        );
+        assert_contract_error(
+            EVENT_ADD,
+            &[
+                "--calendar-id",
+                "id",
+                "--calendar",
+                "Trips",
+                "--source-id",
+                "source",
+            ],
+            ArgumentConflict,
+        );
+        assert_contract_error(
+            EVENT_ADD,
+            &[
+                "--calendar",
+                "Trips",
+                "--calendar-source",
+                "iCloud",
+                "--source-id",
+                "source",
+            ],
+            ArgumentConflict,
+        );
+
+        // Read and write Reminder-list selector requirements and conflicts.
+        assert_contract_error(
+            REMINDER_LIST,
+            &["--list-source", "iCloud"],
+            MissingRequiredArgument,
+        );
+        assert_contract_error(
+            REMINDER_LIST,
+            &["--source-id", "source"],
+            MissingRequiredArgument,
+        );
+        assert_contract_error(
+            REMINDER_LIST,
+            &[
+                "--list",
+                "Inbox",
+                "--list-source",
+                "iCloud",
+                "--source-id",
+                "source",
+            ],
+            ArgumentConflict,
+        );
+        assert_contract_error(
+            REMINDER_ADD,
+            &["--list-source", "iCloud"],
+            MissingRequiredArgument,
+        );
+        assert_contract_error(
+            REMINDER_ADD,
+            &["--source-id", "source"],
+            MissingRequiredArgument,
+        );
+        assert_contract_error(
+            REMINDER_ADD,
+            &["--list-id", "id", "--list", "Inbox"],
+            ArgumentConflict,
+        );
+        assert_contract_error(
+            REMINDER_ADD,
+            &[
+                "--list-id",
+                "id",
+                "--list",
+                "Inbox",
+                "--list-source",
+                "iCloud",
+            ],
+            ArgumentConflict,
+        );
+        assert_contract_error(
+            REMINDER_ADD,
+            &[
+                "--list-id",
+                "id",
+                "--list",
+                "Inbox",
+                "--source-id",
+                "source",
+            ],
+            ArgumentConflict,
+        );
+        assert_contract_error(
+            REMINDER_ADD,
+            &[
+                "--list",
+                "Inbox",
+                "--list-source",
+                "iCloud",
+                "--source-id",
+                "source",
+            ],
+            ArgumentConflict,
+        );
+
+        // Reminder schedule relationship graph.
+        for missing in [
+            "--geofence-latitude",
+            "--geofence-longitude",
+            "--geofence-radius-meters",
+            "--geofence-proximity",
+        ] {
+            let complete = [
+                "--geofence-title",
+                "Office",
+                "--geofence-latitude",
+                "59.9",
+                "--geofence-longitude",
+                "10.7",
+                "--geofence-radius-meters",
+                "100",
+                "--geofence-proximity",
+                "arrive",
+            ];
+            let mut incomplete = Vec::new();
+            let mut skip_value = false;
+            for value in complete {
+                if value == missing {
+                    skip_value = true;
+                } else if skip_value {
+                    skip_value = false;
+                } else {
+                    incomplete.push(value);
+                }
+            }
+            assert_contract_error(REMINDER_ADD, &incomplete, MissingRequiredArgument);
+        }
+        for component in [
+            &["--geofence-latitude", "59.9"][..],
+            &["--geofence-longitude", "10.7"][..],
+            &["--geofence-radius-meters", "100"][..],
+            &["--geofence-proximity", "arrive"][..],
+        ] {
+            assert_contract_error(REMINDER_ADD, component, MissingRequiredArgument);
+        }
+        for recurrence in [
+            &["--repeat-interval", "2"][..],
+            &["--repeat-count", "3"][..],
+            &["--repeat-until", "2026-08-01T10:00+02:00"][..],
+        ] {
+            assert_contract_error(REMINDER_ADD, recurrence, MissingRequiredArgument);
+        }
+        assert_contract_error(
+            REMINDER_ADD,
+            &[
+                "--repeat",
+                "daily",
+                "--repeat-count",
+                "3",
+                "--repeat-until",
+                "2026-08-01T10:00+02:00",
+            ],
+            ArgumentConflict,
+        );
+
+        // Event recurrence requirements and termination conflict.
+        for recurrence in [
+            &["--repeat-interval", "2"][..],
+            &["--repeat-weekday", "monday"][..],
+            &["--repeat-month-day", "14"][..],
+            &["--repeat-count", "3"][..],
+            &["--repeat-until", "2026-08-01T10:00+02:00"][..],
+        ] {
+            assert_contract_error(EVENT_ADD, recurrence, MissingRequiredArgument);
+        }
+        assert_contract_error(
+            EVENT_ADD,
+            &[
+                "--repeat",
+                "daily",
+                "--repeat-count",
+                "3",
+                "--repeat-until",
+                "2026-08-01T10:00+02:00",
+            ],
+            ArgumentConflict,
+        );
+
+        // Event add required-unless-json and mutation conflicts.
+        assert_contract_error(
+            &[
+                "icalctl",
+                "add",
+                "--start",
+                "2026-07-14",
+                "--end",
+                "2026-07-15",
+            ],
+            &[],
+            MissingRequiredArgument,
+        );
+        assert_contract_error(
+            &["icalctl", "add", "Trip", "--end", "2026-07-15"],
+            &[],
+            MissingRequiredArgument,
+        );
+        assert_contract_error(
+            &["icalctl", "add", "Trip", "--start", "2026-07-14"],
+            &[],
+            MissingRequiredArgument,
+        );
+        assert_contract_error(
+            EVENT_ADD,
+            &["--notes", "text", "--notes-file", "notes.txt"],
+            ArgumentConflict,
+        );
+        for conflict in [
+            &["--notes", "text", "--clear-notes"][..],
+            &["--location", "Office", "--clear-location"][..],
+            &["--url", "https://example.com", "--clear-url"][..],
+            &["--all-day", "--timed"][..],
+            &["--time-zone", "Europe/Oslo", "--clear-time-zone"][..],
+        ] {
+            assert_contract_error(EVENT_UPDATE, conflict, ArgumentConflict);
+        }
+
+        // Configuration, Reminder mutation, and travel-flight conflicts.
+        assert_contract_error(
+            &[
+                "icalctl",
+                "config",
+                "set",
+                "calendar.default_calendar_id",
+                "id",
+            ],
+            &["--stdin"],
+            ArgumentConflict,
+        );
+        assert_contract_error(
+            REMINDER_ADD,
+            &["--notes", "text", "--notes-file", "notes.txt"],
+            ArgumentConflict,
+        );
+        for conflict in [
+            &["--parent-id", "parent", "--clear-parent"][..],
+            &["--due", "2026-07-14", "--clear-due"][..],
+            &["--start", "2026-07-14", "--clear-start"][..],
+            &["--time-zone", "Europe/Oslo", "--clear-time-zone"][..],
+            &["--notes", "text", "--notes-file", "notes.txt"][..],
+            &["--notes", "text", "--clear-notes"][..],
+            &["--notes-file", "notes.txt", "--clear-notes"][..],
+            &["--url", "https://example.com", "--clear-url"][..],
+            &["--location", "Office", "--clear-location"][..],
+            &["--clear-notifications", "--notify-at-due"][..],
+            &["--clear-notifications", "--notify-minutes-before", "10"][..],
+            &[
+                "--clear-notifications",
+                "--notify-at",
+                "2026-07-14T10:00+02:00",
+            ][..],
+            &[
+                "--clear-notifications",
+                "--geofence-title",
+                "Office",
+                "--geofence-latitude",
+                "59.9",
+                "--geofence-longitude",
+                "10.7",
+                "--geofence-radius-meters",
+                "100",
+                "--geofence-proximity",
+                "arrive",
+            ][..],
+            &["--clear-recurrence", "--repeat", "daily"][..],
+        ] {
+            assert_contract_error(REMINDER_UPDATE, conflict, ArgumentConflict);
+        }
+        assert_contract_error(
+            &[
+                "icalctl",
+                "travel",
+                "flight",
+                "DY627",
+                "--from",
+                "BGO",
+                "--to",
+                "OSL",
+                "--departure",
+                "2026-07-14T10:00+02:00",
+                "--arrival",
+                "2026-07-14T11:00+02:00",
+            ],
+            &["--notes", "text", "--notes-file", "notes.txt"],
+            ArgumentConflict,
+        );
+    }
+
     #[test]
     fn version_command_parses() {
         let cli = Cli::try_parse_from(["icalctl", "version"]).unwrap();
