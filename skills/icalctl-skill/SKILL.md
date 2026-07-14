@@ -1,5 +1,5 @@
 ---
-name: icalctl
+name: icalctl-skill
 description: Use when managing local macOS Apple Calendar and Reminders data with the icalctl CLI, including reading/searching reminders, listing calendars and reminder lists, producing JSON, creating/updating/deleting events, and safely choosing and confirming targets before writes.
 ---
 

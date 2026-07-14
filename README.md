@@ -166,8 +166,7 @@ guarded iTerm fallback helper. Install and pin it globally with `skillctl`:
 
 ```sh
 skillctl --global add https://github.com/zydtiger/icalctl.git \
-  --path skills/icalctl \
-  --name icalctl-skill \
+  --path skills/icalctl-skill \
   --ref dev
 ```
 
@@ -208,7 +207,7 @@ icalctl doctor --json
 launch terminal, embedded Info.plist keys, and status-specific next commands.
 When the bundled agent skill encounters an embedded launcher that cannot show
 a privacy prompt, it follows the guarded iTerm fallback documented in
-`skills/icalctl/SKILL.md`; it does not automate another terminal. If that
+`skills/icalctl-skill/SKILL.md`; it does not automate another terminal. If that
 fallback fails, run `icalctl calendars` or `icalctl reminders lists` manually
 from Terminal.app, iTerm, or Ghostty.
 

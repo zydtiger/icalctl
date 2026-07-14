@@ -4,8 +4,8 @@ set -u
 set -o pipefail
 
 readonly repository_root="${0:A:h:h}"
-readonly helper="${repository_root}/skills/icalctl/scripts/icalctl-iterm-fallback.sh"
-readonly skill="${repository_root}/skills/icalctl/SKILL.md"
+readonly helper="${repository_root}/skills/icalctl-skill/scripts/icalctl-iterm-fallback.sh"
+readonly skill="${repository_root}/skills/icalctl-skill/SKILL.md"
 readonly mock_osascript="${repository_root}/tests/fixtures/iterm-fallback/mock-osascript.sh"
 readonly echo_args="${repository_root}/tests/fixtures/iterm-fallback/echo-args.sh"
 readonly suite_directory=$(mktemp -d "${TMPDIR:-/tmp}/icalctl-iterm-tests.XXXXXXXX")
