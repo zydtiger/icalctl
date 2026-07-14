@@ -355,13 +355,11 @@ function renderDetails() {
   list.className = "detail-grid";
   addDetail(list, "From", airportDescription(leg.departure_airport));
   addDetail(list, "To", airportDescription(leg.arrival_airport));
-  addDetail(list, "Calendar", stringValue(leg.source?.calendar, "Unknown calendar"));
 
   if (leg.live_status) {
     const live = leg.live_status;
     addDetail(list, "Departure gate", gateDescription(live.departure_terminal, live.departure_gate));
     addDetail(list, "Arrival gate", gateDescription(live.arrival_terminal, live.arrival_gate));
-    addDetail(list, "Freshness", freshnessDescription(live.freshness), true);
     const operationalDescription = distinctOperationalDescription(live);
     if (live.diverted) {
       addDetail(
@@ -941,14 +939,6 @@ function gateDescription(terminal, gate) {
     .join(" · ");
 }
 
-function freshnessDescription(freshness) {
-  if (!freshness) {
-    return "Unavailable";
-  }
-  const stateLabel = freshness.state === "stale" ? "Stale cache" : "Fresh";
-  return `${stateLabel} · fetched ${formatProviderTimestamp(freshness.fetched_at)}`;
-}
-
 function positionDescription(position) {
   const parts = [
     `${Number(position.latitude).toFixed(3)}, ${Number(position.longitude).toFixed(3)}`,
@@ -995,24 +985,6 @@ function formatLocalTimestamp(value) {
     timeZone: "UTC",
   }).format(date);
   return `${dateLabel} · ${hour}:${minute} (${offset === "Z" ? "UTC" : offset})`;
-}
-
-function formatProviderTimestamp(value) {
-  if (!value) {
-    return "unavailable";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return String(value);
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  }).format(date);
 }
 
 function formatGeneratedAt(value) {

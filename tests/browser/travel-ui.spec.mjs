@@ -194,11 +194,15 @@ test("renders, filters, selects, and switches projection without refetching", as
   await expect(page.locator("body")).toHaveAttribute("data-selected-leg", "1");
   expect(await page.locator("#detail-content").evaluate((element) => element.scrollTop)).toBe(0);
   await expect(page.locator("#detail-heading")).toContainText("AY1415");
-  await expect(page.locator("#detail-content")).toContainText("<img id=calendar-xss>");
+  await expect(page.locator("#detail-content")).not.toContainText("<img id=calendar-xss>");
+  await expect(page.locator("#calendar-xss")).toHaveCount(0);
   await expect(page.locator("#detail-content")).toContainText("Estimated arrival updated safely");
   await expect(page.locator("#detail-content")).not.toContainText("CAL-TRAVEL");
+  await expect(page.locator("#detail-content")).not.toContainText("Stale cache");
   for (const obsoleteLabel of [
+    "Calendar",
     "Calendar id",
+    "Freshness",
     "Live status",
     "Departure update",
     "Arrival update",
@@ -341,7 +345,7 @@ test("consolidates booked and provider timing details", async ({page}) => {
   );
   await expect(timingGroup("departure")).toContainText("Booked 16:00 (+02:00)");
   await expect(timingGroup("arrival")).toContainText("Booked 17:10 (+02:00)");
-  await expect(detail).toContainText("Travel");
+  await expect(detail).not.toContainText("Travel");
   await expect(detail).not.toContainText("CAL-TRAVEL");
 
   await page.locator('.trip-card[data-leg-index="1"]').click();
@@ -463,7 +467,9 @@ test("consolidates booked and provider timing details", async ({page}) => {
   await expect(timingGroup("arrival")).toContainText("Updated 17:19 (+02:00) · 9 min late");
 
   for (const obsoleteLabel of [
+    "Calendar",
     "Calendar id",
+    "Freshness",
     "Live status",
     "Departure update",
     "Arrival update",
