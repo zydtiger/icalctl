@@ -15,7 +15,6 @@ mod models;
 mod output;
 mod reminders;
 pub mod travel;
-mod travel_server;
 mod version;
 
 use anyhow::{Context, Result};
@@ -34,7 +33,7 @@ fn main() -> Result<ExitCode> {
         Command::Travel {
             command: TravelCommand::Serve { calendar_ids },
         } => {
-            travel_server::serve(calendar_ids, json)?;
+            travel::server::serve(calendar_ids, json)?;
             return Ok(ExitCode::SUCCESS);
         }
         command => command,
