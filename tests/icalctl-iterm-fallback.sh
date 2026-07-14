@@ -5,6 +5,7 @@ set -o pipefail
 
 readonly repository_root="${0:A:h:h}"
 readonly helper="${repository_root}/scripts/icalctl-iterm-fallback.sh"
+readonly skill="${repository_root}/SKILL.md"
 readonly mock_osascript="${repository_root}/tests/fixtures/iterm-fallback/mock-osascript.sh"
 readonly echo_args="${repository_root}/tests/fixtures/iterm-fallback/echo-args.sh"
 readonly suite_directory=$(mktemp -d "${TMPDIR:-/tmp}/icalctl-iterm-tests.XXXXXXXX")
@@ -131,6 +132,29 @@ for script_label in RESTORE_APPLESCRIPT RESOLVE_APPLESCRIPT CLOSE_APPLESCRIPT RE
         /usr/bin/osacompile -o "$compiled_file" "$source_file" >&2 || true
     fi
 done
+
+new_case
+"$helper" >"$case_stdout" 2>"$case_stderr"
+run_status=$?
+assert_equal "missing executable uses usage-failure status" 64 "$run_status"
+assert_equal \
+    "usage identifies the helper executable" \
+    "usage: icalctl-iterm-fallback.sh ICALCTL_EXECUTABLE [ARG ...]" \
+    "$(<"$case_stderr")"
+assert_equal "usage does not write stdout" "" "$(<"$case_stdout")"
+
+assert_contains \
+    "delegated live-write failures are documented as uncertain" \
+    'if a delegated live write returns `125` after the command may have been' \
+    "$skill"
+assert_contains \
+    "uncertain delegated live writes cannot be replayed" \
+    "Do not rerun it directly," \
+    "$skill"
+assert_contains \
+    "uncertain delegated live writes require fresh confirmation" \
+    "then obtain fresh explicit confirmation for" \
+    "$skill"
 
 new_case
 run_helper success /bin/zsh -c 'printf "delegated-out\n\n"; printf "delegated-err\n\n\n" >&2'

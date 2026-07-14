@@ -6,6 +6,7 @@ set -o pipefail
 readonly DELEGATION_FAILURE=125
 readonly USAGE_FAILURE=64
 readonly ITERM_BUNDLE_IDENTIFIER="com.googlecode.iterm2"
+readonly SCRIPT_NAME="${0:t}"
 
 typeset osascript_bin="/usr/bin/osascript"
 typeset delegated_window_id=""
@@ -31,7 +32,7 @@ integer close_attempts=0
 integer create_attempted=0
 
 print_usage() {
-    print -u2 -- "usage: ${0:t} ICALCTL_EXECUTABLE [ARG ...]"
+    print -u2 -- "usage: ${SCRIPT_NAME} ICALCTL_EXECUTABLE [ARG ...]"
 }
 
 delegation_failure() {

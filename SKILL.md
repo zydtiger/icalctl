@@ -132,8 +132,10 @@ If the helper returns `125`, say immediately:
 
 > I can't run `icalctl` from this agent context, and the iTerm fallback is unavailable or failed.
 
-When it is safe, also give the exact `icalctl` command for the user to run in a
-normal terminal.
+For read-only commands and dry runs, when it is safe, also give the exact
+`icalctl` command for the user to run in a normal terminal. Never present a
+live-mutation rerun as safe when either a direct or delegated execution may
+have started.
 
 Automatic retry after a direct failure is allowed only for read-only commands
 and operations that include `--dry-run`. Never automatically replay a live
@@ -145,6 +147,12 @@ succeeded even if its output or agent process failed. For a live write:
   confirmed write may use the helper as its first execution;
 - if a direct live write has an uncertain result, inspect the exact target with
   a delegated read-only command before considering another confirmed action;
+- if a delegated live write returns `125` after the command may have been
+  released, including after a timeout, interruption, lost status, or cleanup
+  failure, treat the write outcome as uncertain. Do not rerun it directly,
+  delegate it again, or offer it as a manual command. Inspect the exact target
+  with a read-only command first, then obtain fresh explicit confirmation for
+  any corrective or new live action;
 - preserve exact calendar/list IDs, recurrence scope, preview, and every other
   confirmation safeguard in this skill.
 
