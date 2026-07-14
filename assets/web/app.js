@@ -342,47 +342,119 @@ function renderDetails() {
   }
   const leg = state.data.legs[state.selectedIndex];
   elements["detail-heading"].textContent = `${stringValue(leg.flight_number, "Flight")} · ${stringValue(leg.route, "Unknown route")}`;
+  const content = document.createDocumentFragment();
+  const timing = document.createElement("div");
+  timing.className = "timing-groups";
+  timing.append(
+    buildTimingGroup("Departure", "departure", leg.departure, leg.live_status),
+    buildTimingGroup("Arrival", "arrival", leg.arrival, leg.live_status),
+  );
+  content.append(timing);
+
   const list = document.createElement("dl");
   list.className = "detail-grid";
-  addDetail(list, "Departure", formatLocalTimestamp(leg.departure?.scheduled));
-  addDetail(list, "Arrival", formatLocalTimestamp(leg.arrival?.scheduled));
   addDetail(list, "From", airportDescription(leg.departure_airport));
   addDetail(list, "To", airportDescription(leg.arrival_airport));
-  addDetail(list, "Calendar", stringValue(leg.source?.calendar, "Unknown calendar"));
-  addDetail(list, "Calendar id", stringValue(leg.source?.calendar_id, "Unavailable"));
 
   if (leg.live_status) {
     const live = leg.live_status;
-    addDetail(list, "Live status", stringValue(live.description, live.status), true);
-    addDetail(list, "Departure update", preferredTime(live.estimated_departure, live.actual_departure));
-    addDetail(list, "Arrival update", preferredTime(live.estimated_arrival, live.actual_arrival));
     addDetail(list, "Departure gate", gateDescription(live.departure_terminal, live.departure_gate));
     addDetail(list, "Arrival gate", gateDescription(live.arrival_terminal, live.arrival_gate));
-    if (live.departure_delay_seconds !== null && live.departure_delay_seconds !== undefined) {
-      addDetail(list, "Departure delay", delayDescription(live.departure_delay_seconds));
-    }
-    if (live.arrival_delay_seconds !== null && live.arrival_delay_seconds !== undefined) {
-      addDetail(list, "Arrival delay", delayDescription(live.arrival_delay_seconds));
-    }
-    addDetail(list, "Freshness", freshnessDescription(live.freshness), true);
+    const operationalDescription = distinctOperationalDescription(live);
     if (live.diverted) {
-      addDetail(list, "Diversion", "FlightAware reports this flight as diverted", true);
+      addDetail(
+        list,
+        "Diversion",
+        operationalDescription || "FlightAware reports this flight as diverted",
+        true,
+      );
     } else if (live.tracking_ended) {
-      addDetail(list, "Tracking", "FlightAware is no longer tracking this flight", true);
+      addDetail(
+        list,
+        "Tracking",
+        operationalDescription || "FlightAware is no longer tracking this flight",
+        true,
+      );
+    } else if (operationalDescription) {
+      addDetail(list, "Operational update", operationalDescription, true);
     }
     if (live.current_position) {
       addDetail(list, "Current position", positionDescription(live.current_position), true);
     }
-  } else {
-    addDetail(list, "Live status", "Calendar itinerary only", true);
   }
   if (!hasRouteCoordinates(leg)) {
     addDetail(list, "Map", missingCoordinateDescription(leg), true);
   }
 
-  elements["detail-content"].replaceChildren(list);
+  content.append(list);
+  elements["detail-content"].replaceChildren(content);
   elements["detail-content"].scrollTop = 0;
   elements["detail-panel"].hidden = false;
+}
+
+function buildTimingGroup(label, endpoint, schedule, live) {
+  const booked = parseLocalTimestamp(schedule?.scheduled);
+  const update = preferredLiveTime(live, endpoint, booked);
+  const delaySeconds = timingDelaySeconds(live, endpoint, booked, update);
+  const group = document.createElement("section");
+  group.className = "timing-group";
+  group.dataset.endpoint = endpoint;
+
+  const heading = document.createElement("h3");
+  heading.className = "timing-heading";
+  const headingLabel = document.createElement("span");
+  headingLabel.textContent = label;
+  const headingDate = document.createElement("span");
+  headingDate.className = "timing-date";
+  headingDate.textContent = booked?.dateLabel || "Date unavailable";
+  heading.append(headingLabel, document.createTextNode(" · "), headingDate);
+  group.append(heading);
+
+  if (update) {
+    group.append(
+      buildTimingLine("Booked", booked?.timeLabel || "Time unavailable", null),
+      buildTimingLine(
+        "Updated",
+        update.dateKey !== booked?.dateKey
+          ? `${update.shortDateLabel} · ${update.timeLabel}`
+          : update.timeLabel,
+        delaySeconds,
+      ),
+    );
+  } else if (delaySeconds !== null && delaySeconds === 0) {
+    group.append(buildTimingLine(null, booked?.timeLabel || "Time unavailable", delaySeconds));
+  } else {
+    group.append(
+      buildTimingLine("Booked", booked?.timeLabel || "Time unavailable", delaySeconds),
+    );
+  }
+  return group;
+}
+
+function buildTimingLine(kind, value, delaySeconds) {
+  const line = document.createElement("p");
+  line.className = `timing-line${kind ? "" : " single"}`;
+  if (kind) {
+    const label = document.createElement("span");
+    label.className = "timing-kind";
+    label.textContent = `${kind} `;
+    line.append(label);
+  }
+  const reading = document.createElement("span");
+  reading.className = "timing-reading";
+  const time = document.createElement("span");
+  time.className = "timing-value";
+  time.textContent = value;
+  reading.append(time);
+  if (delaySeconds !== null) {
+    const delay = document.createElement("span");
+    const delayState = delaySeconds > 0 ? "late" : delaySeconds < 0 ? "early" : "on-time";
+    delay.className = `timing-delay ${delayState}`;
+    delay.textContent = delayDescription(delaySeconds);
+    reading.append(document.createTextNode(" · "), delay);
+  }
+  line.append(reading);
+  return line;
 }
 
 function addDetail(list, label, value, wide = false) {
@@ -735,14 +807,127 @@ function missingCoordinateDescription(leg) {
   return `Coordinates unavailable for ${missing.join(" and ")}`;
 }
 
-function preferredTime(estimated, actual) {
-  if (actual) {
-    return `Actual ${formatProviderTimestamp(actual)}`;
+function preferredLiveTime(live, endpoint, booked) {
+  if (!live || !booked) {
+    return null;
   }
-  if (estimated) {
-    return `Estimated ${formatProviderTimestamp(estimated)}`;
+  for (const kind of ["actual", "estimated", "scheduled"]) {
+    const value = live[`${kind}_${endpoint}`];
+    const formatted = formatInstantAtOffset(value, booked.offsetMinutes, booked.offsetLabel);
+    if (!formatted) {
+      continue;
+    }
+    if (kind === "scheduled" && formatted.instant === booked.instant) {
+      return null;
+    }
+    return {...formatted, kind};
   }
-  return "No update";
+  return null;
+}
+
+function timingDelaySeconds(live, endpoint, booked, update) {
+  if (!live) {
+    return null;
+  }
+  const reported = Number(live[`${endpoint}_delay_seconds`]);
+  if (
+    live[`${endpoint}_delay_seconds`] !== null &&
+    live[`${endpoint}_delay_seconds`] !== undefined &&
+    Number.isFinite(reported)
+  ) {
+    return reported;
+  }
+  if (booked && update) {
+    return Math.round((update.instant - booked.instant) / 1000);
+  }
+  return null;
+}
+
+function distinctOperationalDescription(live) {
+  const description = typeof live?.description === "string" ? live.description.trim() : "";
+  if (!description) {
+    return null;
+  }
+  const status = typeof live.status === "string" ? live.status.replaceAll("_", " ").trim() : "";
+  if (description.localeCompare(status, undefined, {sensitivity: "accent"}) === 0) {
+    return null;
+  }
+  return description;
+}
+
+function parseLocalTimestamp(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/,
+  );
+  if (!match) {
+    return null;
+  }
+  const [, year, month, day, hour, minute, offset] = match;
+  const instant = Date.parse(value);
+  if (!Number.isFinite(instant)) {
+    return null;
+  }
+  const offsetMinutes = parseOffsetMinutes(offset);
+  if (offsetMinutes === null) {
+    return null;
+  }
+  return {
+    instant,
+    offsetMinutes,
+    offsetLabel: offset === "Z" ? "UTC" : offset,
+    dateKey: `${year}-${month}-${day}`,
+    dateLabel: formatDateLabel(year, month, day, true),
+    shortDateLabel: formatDateLabel(year, month, day, false),
+    timeLabel: `${hour}:${minute} (${offset === "Z" ? "UTC" : offset})`,
+  };
+}
+
+function formatInstantAtOffset(value, offsetMinutes, offsetLabel) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const instant = Date.parse(value);
+  if (!Number.isFinite(instant)) {
+    return null;
+  }
+  const shifted = new Date(instant + offsetMinutes * 60_000);
+  const year = String(shifted.getUTCFullYear()).padStart(4, "0");
+  const month = String(shifted.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(shifted.getUTCDate()).padStart(2, "0");
+  const hour = String(shifted.getUTCHours()).padStart(2, "0");
+  const minute = String(shifted.getUTCMinutes()).padStart(2, "0");
+  return {
+    instant,
+    dateKey: `${year}-${month}-${day}`,
+    dateLabel: formatDateLabel(year, month, day, true),
+    shortDateLabel: formatDateLabel(year, month, day, false),
+    timeLabel: `${hour}:${minute} (${offsetLabel})`,
+  };
+}
+
+function parseOffsetMinutes(value) {
+  if (value === "Z") {
+    return 0;
+  }
+  const match = value.match(/^([+-])(\d{2}):(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+  const minutes = Number(match[2]) * 60 + Number(match[3]);
+  return match[1] === "-" ? -minutes : minutes;
+}
+
+function formatDateLabel(year, month, day, includeYear) {
+  const date = new Date(`${year}-${month}-${day}T00:00:00Z`);
+  return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+    ...(includeYear ? {year: "numeric"} : {}),
+    timeZone: "UTC",
+  }).format(date);
 }
 
 function gateDescription(terminal, gate) {
@@ -752,14 +937,6 @@ function gateDescription(terminal, gate) {
   return [terminal ? `Terminal ${terminal}` : null, gate ? `Gate ${gate}` : null]
     .filter(Boolean)
     .join(" · ");
-}
-
-function freshnessDescription(freshness) {
-  if (!freshness) {
-    return "Unavailable";
-  }
-  const stateLabel = freshness.state === "stale" ? "Stale cache" : "Fresh";
-  return `${stateLabel} · fetched ${formatProviderTimestamp(freshness.fetched_at)}`;
 }
 
 function positionDescription(position) {
@@ -808,24 +985,6 @@ function formatLocalTimestamp(value) {
     timeZone: "UTC",
   }).format(date);
   return `${dateLabel} · ${hour}:${minute} (${offset === "Z" ? "UTC" : offset})`;
-}
-
-function formatProviderTimestamp(value) {
-  if (!value) {
-    return "unavailable";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return String(value);
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  }).format(date);
 }
 
 function formatGeneratedAt(value) {
