@@ -22,20 +22,13 @@ After this directory-based installation, use
 that selected only the repository-root `SKILL.md` must be removed and added
 again once to adopt the complete directory.
 
-## Project Skill Dependencies
+## Generic Agent Workflows
 
-`.agents/skills.lock.yaml` pins the shared workflows that this repository's
-issue process requires:
-
-- `$issue-discovery` drafts and creates approved GitHub issues;
-- `$issue-delivery` implements existing issues through the required worktree,
-  review, publication, and cleanup gates;
-- `$clean-context-code-audit` supplies the independent review gate used by
-  fixes and implementation phases.
-
-Treat their vendored directories and `.skillctl-managed` markers as read-only.
-Make shared changes in the `agent-workflows` warehouse, then apply them here
-with `skillctl update`. Run `skillctl check` before relying on these workflows.
+Generic cross-project workflows such as `$issue-discovery`, `$issue-delivery`,
+and `$clean-context-code-audit` are optional global tooling rather than icalctl
+source or reproducible project dependencies. This repository does not vendor
+them. The issue, review, publication, merge, and cleanup rules below remain
+authoritative whether or not those global skills are installed.
 
 ## Git Commit Prefixes
 

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Clean-Context Code Audit"
-  short_description: "Audit implementation diffs without leaked context"
-  default_prompt: "Use $clean-context-code-audit to independently audit this implementation and its validation evidence."
