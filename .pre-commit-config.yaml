@@ -1,0 +1,20 @@
+repos:
+  - repo: builtin
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-yaml
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: cargo fmt --check
+        language: system
+        pass_filenames: false
+        types_or: [rust]
+      - id: node-check
+        name: node --check
+        entry: node --check
+        language: system
+        types_or: [javascript]

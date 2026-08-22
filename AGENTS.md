@@ -22,6 +22,12 @@ After this directory-based installation, use
 that selected only the repository-root `SKILL.md` must be removed and added
 again once to adopt the complete directory.
 
+## Commit Hooks
+
+Commit hooks are defined in `.pre-commit-config.yaml` and run with `prek`.
+Install the runner once with `uv tool install prek`, then activate the hooks in
+this checkout with `prek install`.
+
 ## Git Commit Prefixes
 
 Use Conventional Commit-style subjects in the form `prefix: concise imperative summary`:
