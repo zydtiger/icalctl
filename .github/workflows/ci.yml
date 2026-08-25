@@ -35,6 +35,4 @@ jobs:
           version: "0.12.5"
 
       - name: Run commit hooks
-        run: |
-          uv tool install prek==0.4.14
-          prek run --all-files
+        run: uvx prek@0.4.14 run --all-files
