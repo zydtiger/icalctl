@@ -28,6 +28,16 @@ Commit hooks are defined in `.pre-commit-config.yaml` and run with `prek`.
 Install the runner once with `uv tool install prek`, then activate the hooks in
 this checkout with `prek install`.
 
+`.github/workflows/ci.yml` runs that same configuration rather than restating
+its commands, so the checks have one definition and cannot drift apart. Apply
+them outside a commit with `prek run --all-files` and
+`prek run --all-files --hook-stage pre-push`; compiling checks and tests run at
+the push stage.
+
+Development is macOS-only. The crate depends unconditionally on EventKit and
+does not compile on any other platform, so there is no Linux or cross-platform
+CI job and none should be added.
+
 ## Git Commit Prefixes
 
 Use Conventional Commit-style subjects in the form `prefix: concise imperative summary`:
