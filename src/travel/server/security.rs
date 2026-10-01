@@ -128,7 +128,7 @@ fn has_capability_cookie(cookies: &[String], expected: &str) -> bool {
 
 pub(super) fn create_capability_token() -> Result<String> {
     let mut bytes = [0_u8; 32];
-    getrandom::getrandom(&mut bytes).map_err(|error| {
+    getrandom::fill(&mut bytes).map_err(|error| {
         anyhow!("failed to generate the travel server capability token: {error}")
     })?;
     const HEX: &[u8; 16] = b"0123456789abcdef";
