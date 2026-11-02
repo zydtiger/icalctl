@@ -167,7 +167,7 @@ guarded iTerm fallback helper. Install and pin it globally with `skillctl`:
 ```sh
 skillctl --global add https://github.com/zydtiger/icalctl.git \
   --path skills/icalctl-skill \
-  --ref dev
+  --ref main
 ```
 
 After this directory-based installation, use

@@ -14,7 +14,7 @@ fallback helper. Install and pin it globally with `skillctl`:
 ```sh
 skillctl --global add https://github.com/zydtiger/icalctl.git \
   --path skills/icalctl-skill \
-  --ref dev
+  --ref main
 ```
 
 After this directory-based installation, use
@@ -112,12 +112,12 @@ user explicitly approves the branch name and phases.
 After approval, create a dedicated Git worktree in the project parent directory,
 not inside the main checkout. Use a predictable path such as
 `../icalctl-issue-<number>-<slug>` and create the approved branch from the
-up-to-date `origin/dev`. Keep all issue implementation, tests, and commits in
+up-to-date `origin/main`. Keep all issue implementation, tests, and commits in
 that worktree. Preserve unrelated changes in the main checkout.
 
 ### Simple bug-fix exception
 
-A bug may use a direct-on-`dev` workflow only when it is a small, isolated,
+A bug may use a direct-on-`main` workflow only when it is a small, isolated,
 single-step correction with one focused commit and no meaningful design choice,
 migration, dependency change, multi-component implementation, or staged rollout.
 If the fix expands beyond that boundary, stop and switch to the phased worktree
@@ -125,13 +125,13 @@ workflow after obtaining user approval.
 
 Before editing, propose the direct-fix scope and validation plan and obtain the
 user's explicit approval. Do not use this exception when the main checkout is
-not on `dev`, contains unrelated or overlapping uncommitted changes, is behind
-`origin/dev`, or otherwise cannot isolate the bug safely; use a dedicated
+not on `main`, contains unrelated or overlapping uncommitted changes, is behind
+`origin/main`, or otherwise cannot isolate the bug safely; use a dedicated
 worktree instead.
 
 For an approved simple bug fix:
 
-1. Work directly in the main project folder on `dev`; do not create a feature
+1. Work directly in the main project folder on `main`; do not create a feature
    branch, worktree, or pull request.
 2. Implement only the isolated fix and its focused regression test or other
    proportionate validation.
@@ -140,7 +140,7 @@ For an approved simple bug fix:
    finding and repeat review when material corrections were required.
 4. Commit only the bug-fix files with a focused `fix:` Conventional Commit
    subject after all findings and checks are clear.
-5. Push the commit to `origin/dev`, verify the exact commit is present there,
+5. Push the commit to `origin/main`, verify the exact commit is present there,
    and add a GitHub issue comment that explicitly names and links the resolving
    commit and summarizes the validation performed.
 6. Manually close the issue as `completed` only after the push and comment
@@ -171,7 +171,7 @@ before its review findings and validation failures are resolved.
 
 After every approved phase is implemented and committed, run the full relevant
 test and lint suite in the worktree and review the complete issue diff. Push the
-feature branch and create a GitHub pull request targeting `dev`. The PR body
+feature branch and create a GitHub pull request targeting `main`. The PR body
 must include:
 
 - a clear summary of what changed;
@@ -190,7 +190,7 @@ worktree and branch as appropriate.
 After GitHub reports a successful merge, perform post-merge cleanup explicitly
 and in this order:
 
-1. Verify that the PR is merged into `dev`, required checks passed, and the
+1. Verify that the PR is merged into `main`, required checks passed, and the
    linked issue closed.
 2. Confirm the issue worktree has no uncommitted changes, untracked files that
    need preserving, or commits that were not included in the merged PR.
@@ -206,7 +206,7 @@ and in this order:
 6. Run `git fetch --prune` and verify `git worktree list` and branch status no
    longer contain stale issue entries.
 
-Do not delete the base `dev` branch or remove any unrelated worktree or branch.
+Do not delete the base `main` branch or remove any unrelated worktree or branch.
 
 ## Releases
 
