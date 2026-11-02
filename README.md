@@ -214,7 +214,7 @@ binary's Calendar decision and request it again manually from a normal
 terminal:
 
 ```sh
-tccutil reset Calendar dev.zyd.icalctl
+tccutil reset Calendar io.github.zydtiger.icalctl
 icalctl calendars
 icalctl doctor --json
 ```
@@ -222,7 +222,7 @@ icalctl doctor --json
 The equivalent Reminders reset is:
 
 ```sh
-tccutil reset Reminders dev.zyd.icalctl
+tccutil reset Reminders io.github.zydtiger.icalctl
 icalctl reminders lists
 icalctl doctor --json
 ```

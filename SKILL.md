@@ -90,10 +90,10 @@ Use `doctor --json` when access fails. It reports authorization, the process
 and whether it disclaimed responsibility to request access as itself, both
 Calendar and Reminders Info.plist keys, and recommended next commands. For a
 stale denied entry, enable access in System Settings first; if needed, run
-`tccutil reset Calendar dev.zyd.icalctl` and request access again.
+`tccutil reset Calendar io.github.zydtiger.icalctl` and request access again.
 
 For a stale Reminders decision, enable access in System Settings first; if
-needed, run `tccutil reset Reminders dev.zyd.icalctl`, then request access
+needed, run `tccutil reset Reminders io.github.zydtiger.icalctl`, then request access
 again with `icalctl reminders lists`.
 
 Automatic retry after a direct failure is allowed only for read-only commands

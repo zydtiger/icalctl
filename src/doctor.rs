@@ -4,7 +4,7 @@ use eventkit::{AuthorizationStatus, EventsManager};
 use objc2_core_location::{CLAuthorizationStatus, CLLocationManager};
 use std::fmt::Debug;
 
-const BUNDLE_IDENTIFIER: &str = "dev.zyd.icalctl";
+const BUNDLE_IDENTIFIER: &str = "io.github.zydtiger.icalctl";
 const INFO_PLIST: &str = include_str!("../Info.plist");
 
 pub fn doctor_report() -> DoctorReport {

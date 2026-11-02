@@ -9,7 +9,7 @@
 	<key>CFBundleExecutable</key>
 	<string>icalctl</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.zyd.icalctl</string>
+	<string>io.github.zydtiger.icalctl</string>
 	<key>CFBundleName</key>
 	<string>icalctl</string>
 	<key>CFBundlePackageType</key>
