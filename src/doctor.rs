@@ -25,6 +25,7 @@ pub fn doctor_report() -> DoctorReport {
             pid: std::process::id(),
             executable,
             terminal_program,
+            responsibility_disclaimed: crate::responsibility::is_disclaimed(),
         },
         info_plist: InfoPlistReport {
             embedded: cfg!(target_os = "macos"),

@@ -115,6 +115,7 @@ pub struct ProcessReport {
     pub pid: u32,
     pub executable: String,
     pub terminal_program: Option<String>,
+    pub responsibility_disclaimed: bool,
 }
 
 #[derive(Debug, Serialize)]

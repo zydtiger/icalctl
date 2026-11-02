@@ -46,6 +46,10 @@ pub(crate) fn print_human_output(output: &JsonOutput) {
                 println!("terminal program: {terminal}");
             }
             println!(
+                "responsibility disclaimed: {}",
+                doctor.process.responsibility_disclaimed
+            );
+            println!(
                 "embedded Info.plist: {} bundle={}",
                 doctor.info_plist.embedded, doctor.info_plist.bundle_identifier
             );

@@ -11,6 +11,7 @@ pub mod flightaware;
 mod models;
 mod output;
 mod reminders;
+mod responsibility;
 pub mod travel;
 mod version;
 
@@ -20,6 +21,10 @@ use cli::{Cli, Command, TravelCommand};
 use std::process::ExitCode;
 
 fn main() -> Result<ExitCode> {
+    if let Some(code) = responsibility::reexec_disclaimed() {
+        return Ok(code);
+    }
+
     let Cli { json, command } = Cli::parse();
 
     let command = match command {

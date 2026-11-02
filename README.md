@@ -189,9 +189,12 @@ icalctl calendars
 icalctl reminders lists
 ```
 
-If permission was granted, this should report your calendars. If the command was
-launched from an embedded tool environment, macOS may attribute the permission
-request to that parent process instead of the terminal.
+If permission was granted, this should report your calendars. On startup
+`icalctl` re-executes itself with TCC responsibility disclaimed, so macOS asks
+for and records access for `icalctl` itself rather than for the terminal, editor,
+or agent app that launched it. This lets the prompt appear even when the
+launching app declares no Calendar or Reminders usage strings. The grant follows
+the binary's code signature; an ad-hoc signed rebuild asks again.
 
 Check current authorization status:
 
