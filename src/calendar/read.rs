@@ -8,7 +8,7 @@ pub(crate) fn authorized_events_manager() -> Result<EventsManager> {
             match events.request_access() {
                 Ok(true) => Ok(events),
                 Ok(false) => bail!(
-                    "Calendar access was not granted (authorization=NotDetermined); run `icalctl calendars` from Terminal.app, iTerm, or Ghostty and approve the macOS Calendar prompt"
+                    "Calendar access was not granted (authorization=NotDetermined); run `icalctl calendars` and approve the macOS Calendar prompt"
                 ),
                 Err(error) => bail!(crate::doctor::access_request_error_message(&error)),
             }

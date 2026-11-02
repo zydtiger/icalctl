@@ -161,19 +161,18 @@ new version, update `Cargo.toml`, run the full checks, and reinstall with
 
 ### Install the agent skill
 
-The bundled `icalctl` agent skill is a complete directory containing its
-guarded iTerm fallback helper. Install and pin it globally with `skillctl`:
+Install the bundled agent skill under the required folder name, from the
+project root:
 
 ```sh
-skillctl --global add https://github.com/zydtiger/icalctl.git \
-  --path skills/icalctl-skill \
-  --ref main
+mkdir -p ~/.agents/skills/icalctl-skill
+cp SKILL.md ~/.agents/skills/icalctl-skill/SKILL.md
 ```
 
-After this directory-based installation, use
-`skillctl --global update icalctl-skill` to advance it. A legacy installation
-that selected only the repository-root `SKILL.md` must be removed and added
-again once to adopt the complete directory.
+The installed directory and the `SKILL.md` declared name are both
+`icalctl-skill`. Copy `SKILL.md` again after updating this repository. Copying
+it does not install or update the CLI binary; reinstall an updated binary with
+one of the commands above.
 
 ## Permissions
 
@@ -181,8 +180,7 @@ again once to adopt the complete directory.
 Mach-O binary through `embed_plist`. macOS authorizes the two EventKit stores
 independently.
 
-To request the first permissions yourself, run these commands manually in a
-normal terminal such as Terminal.app, iTerm, or Ghostty:
+To request the first permissions, run:
 
 ```sh
 icalctl calendars
@@ -207,12 +205,8 @@ icalctl doctor --json
 ```
 
 `doctor` reports both authorization states, executable path and process id,
-launch terminal, embedded Info.plist keys, and status-specific next commands.
-When the bundled agent skill encounters an embedded launcher that cannot show
-a privacy prompt, it follows the guarded iTerm fallback documented in
-`skills/icalctl-skill/SKILL.md`; it does not automate another terminal. If that
-fallback fails, run `icalctl calendars` or `icalctl reminders lists` manually
-from Terminal.app, iTerm, or Ghostty.
+launch terminal, whether responsibility was disclaimed, embedded Info.plist
+keys, and status-specific next commands.
 
 For a stale denied permission entry, first try enabling Full Calendar Access in
 System Settings > Privacy & Security > Calendars. If necessary, reset this

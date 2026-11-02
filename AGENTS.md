@@ -4,23 +4,12 @@
 
 `icalctl` is an Apple Silicon macOS CLI written in Rust for reading and managing the local Apple Calendar store through EventKit. It works with calendars already configured in Calendar.app, including iCloud, Google, Exchange, and local calendars. Human-readable output is the default; `--json` is the scripting and agent interface.
 
-Calendar writes are real user-data mutations. Preserve the confirmation and calendar-selection safeguards documented in `skills/icalctl-skill/SKILL.md`, and prefer exact EventKit calendar ids in automated workflows.
+Calendar writes are real user-data mutations. Preserve the confirmation and calendar-selection safeguards documented in `SKILL.md`, and prefer exact EventKit calendar ids in automated workflows.
 
-## Agent Skill Installation
+## Agent Skill
 
-The bundled agent skill is a complete directory containing its guarded iTerm
-fallback helper. Install and pin it globally with `skillctl`:
-
-```sh
-skillctl --global add https://github.com/zydtiger/icalctl.git \
-  --path skills/icalctl-skill \
-  --ref main
-```
-
-After this directory-based installation, use
-`skillctl --global update icalctl-skill` to advance it. A legacy installation
-that selected only the repository-root `SKILL.md` must be removed and added
-again once to adopt the complete directory.
+The repository-root `SKILL.md` is the bundled agent skill, a single
+self-contained file. `README.md` documents how to install it.
 
 ## Commit Hooks
 
@@ -59,7 +48,7 @@ Keep each commit focused. Use a lowercase prefix, omit a trailing period, and ad
 Use GitHub Issues as the canonical backlog for planned features, bugs, and other
 actionable work. Do not recreate already resolved historical items as GitHub
 issues. Document current behavior in `README.md` and
-`skills/icalctl-skill/SKILL.md`; use commits and pull requests for implementation
+`SKILL.md`; use commits and pull requests for implementation
 history.
 
 ### Drafting and creating issues

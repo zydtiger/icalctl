@@ -130,18 +130,17 @@ fn reminders_remediation(status: ReminderAuthorization) -> Vec<String> {
             "Reminders full access is ready; prefer exact list ids for automation.".to_string(),
         ],
         ReminderAuthorization::NotDetermined => vec![
-            "Open Terminal.app, iTerm, or Ghostty outside an embedded tool sandbox.".to_string(),
             "Run `icalctl reminders lists` and approve the macOS Reminders prompt.".to_string(),
             "Run `icalctl doctor --json` again to verify Reminders FullAccess.".to_string(),
         ],
         ReminderAuthorization::WriteOnly => vec![
             "Open System Settings > Privacy & Security > Reminders.".to_string(),
-            "Enable full Reminders access for icalctl or its launching terminal.".to_string(),
+            "Enable full Reminders access for icalctl.".to_string(),
         ],
         ReminderAuthorization::Denied => vec![
             "Open System Settings > Privacy & Security > Reminders and enable access.".to_string(),
             format!(
-                "If the entry is stale, run `tccutil reset Reminders {BUNDLE_IDENTIFIER}` from a terminal, then rerun `icalctl reminders lists`."
+                "If the entry is stale, run `tccutil reset Reminders {BUNDLE_IDENTIFIER}`, then rerun `icalctl reminders lists`."
             ),
         ],
         ReminderAuthorization::Restricted => vec![
@@ -149,7 +148,7 @@ fn reminders_remediation(status: ReminderAuthorization) -> Vec<String> {
                 .to_string(),
         ],
         ReminderAuthorization::Unknown => vec![
-            "macOS returned an unknown Reminders authorization status; rerun from a normal terminal and inspect `icalctl doctor --json`."
+            "macOS returned an unknown Reminders authorization status; inspect `icalctl doctor --json`."
                 .to_string(),
         ],
     }
@@ -163,7 +162,7 @@ pub fn access_request_error_message(error: &impl Debug) -> String {
         ""
     };
     format!(
-        "failed to request full Calendar access (authorization=NotDetermined).{mach_hint} Run `icalctl calendars` from Terminal.app, iTerm, or Ghostty and approve the macOS Calendar prompt; then run `icalctl doctor --json`. Original error: {detail}"
+        "failed to request full Calendar access (authorization=NotDetermined).{mach_hint} Run `icalctl calendars` and approve the macOS Calendar prompt; then run `icalctl doctor --json`. Original error: {detail}"
     )
 }
 
@@ -194,18 +193,17 @@ fn remediation(status: AuthorizationStatus) -> Vec<String> {
                 .to_string(),
         ],
         AuthorizationStatus::NotDetermined => vec![
-            "Open Terminal.app, iTerm, or Ghostty outside an embedded tool sandbox.".to_string(),
             "Run `icalctl calendars` and approve the macOS Calendar prompt.".to_string(),
             "Run `icalctl doctor --json` again to verify FullAccess.".to_string(),
         ],
         AuthorizationStatus::WriteOnly => vec![
             "Open System Settings > Privacy & Security > Calendars.".to_string(),
-            "Enable Full Calendar Access for icalctl or its launching terminal.".to_string(),
+            "Enable Full Calendar Access for icalctl.".to_string(),
         ],
         AuthorizationStatus::Denied => vec![
             "Open System Settings > Privacy & Security > Calendars and enable access.".to_string(),
             format!(
-                "If the entry is stale, run `tccutil reset Calendar {BUNDLE_IDENTIFIER}` from a terminal, then rerun `icalctl calendars`."
+                "If the entry is stale, run `tccutil reset Calendar {BUNDLE_IDENTIFIER}`, then rerun `icalctl calendars`."
             ),
         ],
         AuthorizationStatus::Restricted => vec![
@@ -228,7 +226,7 @@ mod tests {
         assert!(
             remediation(AuthorizationStatus::NotDetermined)
                 .iter()
-                .any(|step| step.contains("Terminal.app"))
+                .any(|step| step.contains("icalctl calendars"))
         );
     }
 
@@ -239,7 +237,6 @@ mod tests {
         assert!(message.contains("authorization=NotDetermined"));
         assert!(message.contains("Mach 4099"));
         assert!(message.contains("icalctl calendars"));
-        assert!(message.contains("Terminal.app"));
     }
 
     #[test]

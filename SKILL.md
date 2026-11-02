@@ -76,9 +76,9 @@ Useful statuses:
 - `FullAccess`: read and write commands can work.
 - `WriteOnly`: current `icalctl` requires full access for all Calendar-touching commands, including adds, because it reads and validates calendars before writes.
 - `Denied` or `Restricted`: the user must change macOS privacy settings.
-- `NotDetermined`: follow the guarded iTerm fallback below when the current
-  launch context cannot show the permission prompt. If that fails, ask the user
-  to run the command manually in a normal terminal.
+- `NotDetermined`: run the command anyway. `icalctl` requests access for itself
+  regardless of which app launched it, so macOS shows its permission prompt;
+  ask the user to approve it.
 
 To trigger the permission prompt and verify calendars:
 
@@ -86,57 +86,15 @@ To trigger the permission prompt and verify calendars:
 icalctl calendars
 ```
 
-Use `doctor --json` when access fails. It reports authorization, process and
-launch context, both Calendar and Reminders Info.plist keys, and recommended
-next commands. For `NSMachErrorDomain` or Mach error 4099, follow the guarded
-iTerm fallback below. If it fails, ask the user to rerun `icalctl calendars`
-manually from Terminal.app, iTerm, or Ghostty. For a stale denied entry, enable
-access in System Settings first; if needed, run
+Use `doctor --json` when access fails. It reports authorization, the process
+and whether it disclaimed responsibility to request access as itself, both
+Calendar and Reminders Info.plist keys, and recommended next commands. For a
+stale denied entry, enable access in System Settings first; if needed, run
 `tccutil reset Calendar dev.zyd.icalctl` and request access again.
 
 For a stale Reminders decision, enable access in System Settings first; if
-needed, run `tccutil reset Reminders dev.zyd.icalctl`, then ask the user to
-request access by running `icalctl reminders lists` manually in a normal
-terminal.
-
-### iTerm launch-context fallback
-
-Run `icalctl` directly first. Use the bundled iTerm helper only when the direct
-failure is specifically attributable to the current agent launch context:
-`NSMachErrorDomain`, Mach error 4099, a `NotDetermined` authorization state
-whose permission prompt cannot be presented, or an equivalent recommendation
-from `icalctl doctor --json`. A successful direct command never opens iTerm.
-Invalid arguments, ambiguous selectors, denied authorization, validation
-failures, missing objects, duplicate detection, user cancellation, and other
-ordinary CLI or domain errors must be reported without delegation.
-
-An earlier read-only command may establish that direct EventKit access is
-unusable for the rest of the current workflow. Otherwise, always try the exact
-command directly before considering the fallback. Invoke the helper at most
-once for an eligible command:
-
-```sh
-ICALCTL_PATH=$(command -v icalctl)
-~/.agents/skills/icalctl-skill/scripts/icalctl-iterm-fallback.sh \
-  "$ICALCTL_PATH" reminders lists --json
-```
-
-The helper accepts the executable followed by its argument vector, creates one
-hidden iTerm window without activating iTerm, runs an explicit local
-`/bin/zsh -lc` command, preserves the frontmost application, and closes only
-the window it created. It does not fall back to Terminal.app, Ghostty, or
-another terminal. Exit status `125` means delegation itself was unavailable,
-failed, or timed out. Any other status is the delegated `icalctl` status; treat
-its stdout and stderr exactly like direct command output.
-
-If the helper returns `125`, say immediately:
-
-> I can't run `icalctl` from this agent context, and the iTerm fallback is unavailable or failed.
-
-For read-only commands and dry runs, when it is safe, also give the exact
-`icalctl` command for the user to run in a normal terminal. Never present a
-live-mutation rerun as safe when either a direct or delegated execution may
-have started.
+needed, run `tccutil reset Reminders dev.zyd.icalctl`, then request access
+again with `icalctl reminders lists`.
 
 Automatic retry after a direct failure is allowed only for read-only commands
 and operations that include `--dry-run`. Never automatically replay a live
@@ -451,7 +409,7 @@ Use before read/write operations when permission state is unknown. If status is 
 
 ### `doctor`
 
-Diagnose Calendar permission and launch-context failures without requesting
+Diagnose Calendar and Reminders permission failures without requesting
 access or changing Calendar data:
 
 ```sh
