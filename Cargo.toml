@@ -1,6 +1,6 @@
 [package]
 name = "icalctl"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 description = "A macOS Apple Calendar and Reminders CLI backed by EventKit"
 license = "MIT"
